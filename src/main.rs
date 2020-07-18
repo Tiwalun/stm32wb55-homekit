@@ -11,7 +11,7 @@ use core::{fmt::Write, time::Duration};
 use cortex_m_rt::exception;
 use heapless::spsc::{MultiCore, Queue};
 use nb::block;
-use rtfm::app;
+use rtic::app;
 
 use hal::{
     flash::FlashExt,
@@ -150,7 +150,7 @@ const APP: () = {
 
         let mut serial = Serial::usart1(dp.USART1, (tx, rx), 115_200.bps(), &mut rcc);
 
-        write!(serial, "Bootup 10\r\n").unwrap();
+        writeln!(serial, "Boooot");
 
         // RTC is required for proper operation of BLE stack
         let _rtc = hal::rtc::Rtc::rtc(dp.RTC, &mut rcc);
