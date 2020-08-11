@@ -27,6 +27,9 @@ usb-device = "0.2"
 usbd-serial = "0.1.0"
 # srp = { version = "*", path = "../rust_pakes/srp" }
 
+[package.metadata]
+chip = "STM32WB55CCUX"
+
 
 [dependencies.embedded-hal]
 version = "0.2.3"
