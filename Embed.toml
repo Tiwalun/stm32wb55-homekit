@@ -1,0 +1,12 @@
+[default.general]
+chip = "stm32wb55ccux"
+
+[default.flashing]
+enabled = "true"
+
+[default.rtt]
+enabled = "false"
+timeout = 20000
+
+[default.probe]
+speed = 500
