@@ -1,0 +1,7 @@
+{
+    "lldb.displayFormat": "auto",
+    "lldb.showDisassembly": "auto",
+    "lldb.dereferencePointers": true,
+    "Cargo Flash.chip": "stm32wb55cc",
+    "Cargo Flash.binary": "/home/dominik/Coding/cargo-flash/target/release/cargo-flash"
+}

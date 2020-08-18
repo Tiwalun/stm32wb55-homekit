@@ -1,0 +1,20 @@
+[workspace]
+
+members = [
+    "stm32wb55-homekit",
+    "stm32wb55",
+    "stm32wb-hal",
+    "stm32wb-pac",
+]
+
+[profile.dev]
+incremental = false
+codegen-units = 1
+
+[profile.release]
+codegen-units = 1
+debug = true
+lto = true
+
+[patch.crates-io]
+bluetooth-hci = { path = "../bluetooth-hci" }
