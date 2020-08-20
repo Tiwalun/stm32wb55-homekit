@@ -1,12 +1,21 @@
 [default.general]
 chip = "stm32wb55ccux"
+log_level = "WARN"
 
 [default.flashing]
 enabled = "true"
 
 [default.rtt]
-enabled = "false"
+enabled = "true"
 timeout = 20000
 
 [default.probe]
-speed = 500
+speed = 950
+
+
+[log.rtt]
+enabled = "true"
+timeout = 20000
+
+[log.probe]
+speed = 950

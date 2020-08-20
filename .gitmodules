@@ -1,9 +1,0 @@
-[submodule "stm32wb-hal"]
-	path = stm32wb-hal
-	url = https://github.com/eupn/stm32wb-hal.git
-[submodule "stm32wb55"]
-	path = stm32wb55
-	url = https://github.com/eupn/stm32wb55.git
-[submodule "stm32wb55-pac"]
-	path = stm32wb-pac
-	url = https://github.com/eupn/stm32wb-pac

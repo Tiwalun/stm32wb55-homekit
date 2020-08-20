@@ -3,15 +3,20 @@
 #![no_std]
 #![allow(non_snake_case)]
 
-use panic_halt as _;
+use panic_rtt_target as _;
+// use panic_halt as _;
+use rtt_target::{rprintln, rtt_init_print};
 
 extern crate stm32wb_hal as hal;
 
-use core::{fmt::Write, time::Duration};
+use core::{fmt::Debug, time::Duration};
 
 use cortex_m_rt::{entry, exception};
 use heapless::spsc::{MultiCore, Queue};
 use nb::block;
+
+use bbqueue::consts::U514;
+use bbqueue::{BBBuffer, ConstBBBuffer};
 
 use hal::{
     flash::FlashExt,
@@ -21,7 +26,6 @@ use hal::{
         ApbDivider, Config, HDivider, HseDivider, PllConfig, PllSrc, RfWakeupClock, RtcClkSrc,
         StopWakeupClock, SysClkSrc,
     },
-    serial::Serial,
     tl_mbox::{lhci::LhciC1DeviceInformationCcrp, shci::ShciBleInitCmdParam, TlMbox},
 };
 
@@ -34,11 +38,11 @@ use bluetooth_hci::{
         uart::{Hci as UartHci, Packet},
         AdvertisingFilterPolicy, EncryptionKey, Hci, OwnAddressType,
     },
-    BdAddr,
+    BdAddr, Status,
 };
 
 use stm32wb55::{
-    event::Stm32Wb5xEvent,
+    event::{command::GattCharacteristicDescriptor, AttributeHandle, Stm32Wb5xEvent},
     gap::{
         AdvertisingDataType, AdvertisingType, Commands as GapCommands, DiscoverableParameters,
         LocalName, Role,
@@ -47,22 +51,25 @@ use stm32wb55::{
         AccessPermission, AddCharacteristicParameters, AddDescriptorParameters,
         AddServiceParameters, CharacteristicEvent, CharacteristicHandle, CharacteristicPermission,
         CharacteristicProperty, Commands as GattCommads, DescriptorHandle, DescriptorPermission,
-        DescriptorValueParameters, EncryptionKeySize, KnownDescriptor, ServiceHandle, ServiceType,
+        DescriptorValueParameters, EncryptionKeySize, ServiceHandle, ServiceType,
         UpdateCharacteristicValueParameters, Uuid,
     },
     hal::{Commands as HalCommands, ConfigData, PowerLevel},
     RadioCoprocessor,
 };
 
-pub type HciCommandsQueue =
-    Queue<fn(&mut RadioCoprocessor<'static>, &BleContext), heapless::consts::U32, u8, MultiCore>;
+pub type HciCommandsQueue = Queue<
+    fn(&mut RadioCoprocessor<'static, U514>, &BleContext),
+    heapless::consts::U32,
+    u8,
+    MultiCore,
+>;
 
 /// Advertisement interval in milliseconds.
 const ADV_INTERVAL_MS: u64 = 250;
 
-// Need to be at least 257 bytes to hold biggest possible HCI BLE event + header
-const BLE_DATA_BUF_SIZE: usize = 257 * 2;
-const BLE_GAP_DEVICE_NAME_LENGTH: u8 = 7;
+const BT_NAME: &[u8] = b"hakt\0";
+const BLE_GAP_DEVICE_NAME_LENGTH: u8 = BT_NAME.len() as u8;
 
 #[derive(Debug, Default)]
 pub struct BleContext {
@@ -78,18 +85,21 @@ pub struct BleContext {
     hap_accessory_information_identify_handle: Option<CharacteristicHandle>,
 }
 
-static mut RADIO_COPROCESSOR: Option<RadioCoprocessor> = None;
+type RadioCopro = RadioCoprocessor<'static, U514>;
+
+static BB: BBBuffer<U514> = BBBuffer(ConstBBBuffer::new());
+
+static mut RADIO_COPROCESSOR: Option<RadioCopro> = None;
 
 #[entry]
 fn entry() -> ! {
+    rtt_init_print!(BlockIfFull, 4096);
     run();
 
     loop {
         continue;
     }
 }
-
-static mut BLE_DATA_BUF: [u8; BLE_DATA_BUF_SIZE] = [0u8; BLE_DATA_BUF_SIZE];
 
 fn run() {
     let dp = hal::device::Peripherals::take().unwrap();
@@ -120,17 +130,7 @@ fn run() {
 
     let mut rcc = rcc.apply_clock_config(clock_config, &mut dp.FLASH.constrain().acr);
 
-    let mut gpiob = dp.GPIOB.split(&mut rcc);
-
-    let tx = gpiob
-        .pb6
-        .into_push_pull_output(&mut gpiob.moder, &mut gpiob.otyper)
-        .into_af7(&mut gpiob.moder, &mut gpiob.afrl);
-    let rx = gpiob.pb7.into_af7(&mut gpiob.moder, &mut gpiob.afrl);
-
-    let mut serial = Serial::usart1(dp.USART1, (tx, rx), 115_200.bps(), &mut rcc);
-
-    let _ = writeln!(serial, "Boot");
+    rprintln!("Boot");
 
     // RTC is required for proper operation of BLE stack
     let _rtc = hal::rtc::Rtc::rtc(dp.RTC, &mut rcc);
@@ -158,7 +158,9 @@ fn run() {
         ll_only: 0,
         hw_version: 0,
     };
-    let rc = unsafe { RadioCoprocessor::new(&mut BLE_DATA_BUF[..], mbox, ipcc, config) };
+
+    let (producer, consumer) = BB.try_split().unwrap();
+    let rc = RadioCoprocessor::new(producer, consumer, mbox, ipcc, config);
 
     unsafe {
         RADIO_COPROCESSOR = Some(rc);
@@ -171,31 +173,31 @@ fn run() {
 
     let ready_event = block!(receive_event());
 
-    let _ = writeln!(serial, "Received packet: {:?}", ready_event);
+    rprintln!("Received packet: {:?}", ready_event);
 
-    let _ = writeln!(serial, "Resetting processor...");
+    rprintln!("Resetting processor...");
 
     let reset_response = perform_command(|rc| rc.reset()).expect("Failed to reset processor");
 
-    let _ = writeln!(serial, "Received packet: {:?}", reset_response);
+    rprintln!("Received packet: {:?}", reset_response);
 
-    init_gap_and_gatt(&mut serial).expect("Failed to initialize GAP and GATT");
+    init_gap_and_gatt().expect("Failed to initialize GAP and GATT");
 
-    let _ = writeln!(serial, "Succesfully initialized GAP and GATT");
+    rprintln!("Succesfully initialized GAP and GATT");
 
     init_homekit().expect("Failed to initialize homekit setup");
 
-    let _ = writeln!(serial, "Succesfully initialized Homekit");
+    rprintln!("Succesfully initialized Homekit");
 
     loop {
         let response = block!(receive_event());
 
-        let _ = writeln!(serial, "Received event: {:x?}", response);
+        rprintln!("Received event: {:x?}", response);
     }
 }
 
 fn perform_command(
-    command: impl Fn(&mut RadioCoprocessor<'static>) -> nb::Result<(), ()>,
+    command: impl Fn(&mut RadioCopro) -> nb::Result<(), ()>,
 ) -> Result<ReturnParameters<Stm32Wb5xEvent>, ()> {
     // Send command (blocking)
     block!(cortex_m::interrupt::free(|_| {
@@ -271,16 +273,27 @@ fn get_bd_addr() -> BdAddr {
     BdAddr(bytes)
 }
 
+fn check_status<S: Debug>(status: &Status<S>) -> Result<(), ()> {
+    if let Status::Success = status {
+        Ok(())
+    } else {
+        rprintln!("Status not succesfull: {:?}", status);
+        Err(())
+    }
+}
+
 #[derive(Debug)]
-struct Service(ServiceHandle);
+struct Service {
+    handle: ServiceHandle,
+
+    max_num_attributes: u8,
+}
 
 impl Service {
-    fn new(
-        service_type: ServiceType,
-        uuid: Uuid,
-        max_attribute_records: usize,
-    ) -> Result<Self, ()> {
-        let protocol_handle = perform_command(|rc| {
+    fn new(service_type: ServiceType, uuid: Uuid, max_attribute_records: u8) -> Result<Self, ()> {
+        rprintln!("Adding service {:x?}", uuid);
+
+        let protocol_handle = perform_command(|rc: &mut RadioCopro| {
             let service = AddServiceParameters {
                 service_type,
                 uuid,
@@ -291,11 +304,19 @@ impl Service {
 
         if let ReturnParameters::Vendor(
             stm32wb55::event::command::ReturnParameters::GattAddService(
-                stm32wb55::event::command::GattService { service_handle, .. },
+                stm32wb55::event::command::GattService {
+                    service_handle,
+                    status,
+                },
             ),
         ) = protocol_handle
         {
-            Ok(Service(service_handle))
+            check_status(&status).expect("Failed to add service");
+            rprintln!("Handle {:?}", service_handle);
+            Ok(Service {
+                handle: service_handle,
+                max_num_attributes: max_attribute_records,
+            })
         } else {
             //writeln!(serial, "Unexpected response to init_gap command");
             Err(())
@@ -309,9 +330,12 @@ impl Service {
         value_len: usize,
         is_variable: bool,
     ) -> Result<Characteristic, ()> {
-        let response = perform_command(|rc| {
+        rprintln!("Adding characteristic {:x?}", uuid);
+        rprintln!(" Properties: {:?}", properties);
+
+        let response = perform_command(|rc: &mut RadioCopro| {
             rc.add_characteristic(&AddCharacteristicParameters {
-                service_handle: self.0,
+                service_handle: self.handle,
                 characteristic_uuid: *uuid,
                 characteristic_properties: properties,
                 characteristic_value_len: value_len,
@@ -330,19 +354,49 @@ impl Service {
             stm32wb55::event::command::ReturnParameters::GattAddCharacteristic(
                 stm32wb55::event::command::GattCharacteristic {
                     characteristic_handle,
-                    ..
+                    status,
                 },
             ),
         ) = response
         {
+            check_status(&status).expect("Failed to add characteristic");
+            rprintln!("Handle (declaration): {:?}", characteristic_handle);
+            rprintln!("Handle (value): {:?}", characteristic_handle.0 + 1);
+
+            // If the notify or indicate properties are set,
+            // a CCCD (Client characteristic configuration descriptor) is allocated as well.
+            if properties
+                .intersects(CharacteristicProperty::NOTIFY | CharacteristicProperty::INDICATE)
+            {
+                rprintln!(
+                    "Client characteristic configuration: Handle={}",
+                    characteristic_handle.0 + 1,
+                );
+            }
+
             Ok(Characteristic {
-                service: self.0,
+                service: self.handle,
                 characteristic: characteristic_handle,
                 max_len: value_len,
             })
         } else {
             Err(())
         }
+    }
+
+    /// Check if this service contains the given handle.
+    ///
+    /// The check is done based on the maximum number of handles
+    /// reserved for this service, as given in the `Service::new`
+    /// function. A value of `true` does not guarantee that
+    /// the given handle has actually been created, however the
+    /// given handle cannot exist in any other service.
+    fn contains_handle(&self, handle: AttributeHandle) -> bool {
+        let value = handle.0;
+
+        let service_handle = self.handle.0;
+
+        service_handle <= value && value < (service_handle + self.max_num_attributes as u16)
     }
 }
 
@@ -359,7 +413,7 @@ impl Characteristic {
             return Err(());
         }
 
-        perform_command(|rc| {
+        perform_command(|rc: &mut RadioCopro| {
             rc.update_characteristic_value(&UpdateCharacteristicValueParameters {
                 service_handle: self.service,
                 characteristic_handle: self.characteristic,
@@ -371,39 +425,19 @@ impl Characteristic {
 
         Ok(())
     }
-}
 
-struct HapService {
-    sevice: ServiceHandle,
-    instance_id: CharacteristicHandle,
-}
+    fn add_descriptor(&self, uuid: Uuid, length: usize) -> Result<DescriptorHandle, ()> {
+        let dummy_slice = [0u8; 10];
 
-/// HAP Characteristic
-struct HapCharacteristic {
-    characteristic: Characteristic,
-    characteristic_id: DescriptorHandle,
+        assert!(length <= 10, "Hack: Not implemented for length > 10");
 
-    max_len: usize,
-}
-
-impl HapCharacteristic {
-    fn build(
-        service: &Service,
-        instance_id: u16,
-        uuid: Uuid,
-        properties: CharacteristicProperty,
-        characteristic_len: usize,
-    ) -> Result<Self, ()> {
-        let characteristic =
-            service.add_characteristic(&uuid, properties, characteristic_len, false)?;
-
-        let descriptor = perform_command(|rc| {
+        let descriptor = perform_command(|rc: &mut RadioCopro| {
             rc.add_characteristic_descriptor(&mut AddDescriptorParameters {
-                service_handle: characteristic.service,
-                characteristic_handle: characteristic.characteristic,
-                descriptor_uuid: Uuid::Uuid128(UUID_CHARACTERISTIC_ID),
-                descriptor_value_max_len: 2,
-                descriptor_value: &[0x7, 0x0],
+                service_handle: self.service,
+                characteristic_handle: self.characteristic,
+                descriptor_uuid: uuid,
+                descriptor_value_max_len: length,
+                descriptor_value: &dummy_slice[..length],
                 security_permissions: DescriptorPermission::empty(),
                 access_permissions: AccessPermission::READ,
                 gatt_event_mask: CharacteristicEvent::empty(),
@@ -416,29 +450,95 @@ impl HapCharacteristic {
         let descriptor_handle = match descriptor {
             ReturnParameters::Vendor(
                 stm32wb55::event::command::ReturnParameters::GattAddCharacteristicDescriptor(
-                    params,
+                    GattCharacteristicDescriptor {
+                        status,
+                        descriptor_handle,
+                    },
                 ),
-            ) => params,
+            ) => {
+                check_status(&status)?;
+                descriptor_handle
+            }
             _ => {
-                // let _ = writeln!(serial, "Unexpected response to init_gap command");
+                // rprintln!( "Unexpected response to init_gap command");
                 return Err(());
             }
         };
 
-        //let _ = writeln!(serial, "Descriptor handle: {:?}", descriptor_handle);
+        rprintln!("Descriptor {:?} - {:?}", uuid, descriptor_handle);
+
+        Ok(descriptor_handle)
+    }
+}
+
+struct HapService {
+    service: Service,
+    instance_id: Characteristic,
+}
+
+impl HapService {
+    fn new(
+        service_type: ServiceType,
+        uuid: Uuid,
+        max_attribute_records: u8,
+        instance_id: u16,
+    ) -> Result<HapService, ()> {
+        let service = Service::new(ServiceType::Primary, uuid, max_attribute_records)?;
+
+        let instance_id_characteristic = service.add_characteristic(
+            &Uuid::Uuid128(UUID_SERVICE_INSTANCE),
+            CharacteristicProperty::READ,
+            2,
+            false,
+        )?;
+
+        instance_id_characteristic.set_value(&instance_id.to_le_bytes())?;
+
+        Ok(HapService {
+            service,
+            instance_id: instance_id_characteristic,
+        })
+    }
+}
+
+/// HAP Characteristic
+struct HapCharacteristic {
+    characteristic: Characteristic,
+    characteristic_id: DescriptorHandle,
+
+    max_len: usize,
+}
+
+impl HapCharacteristic {
+    fn build(
+        service: &HapService,
+        instance_id: u16,
+        uuid: Uuid,
+        properties: CharacteristicProperty,
+        characteristic_len: usize,
+    ) -> Result<Self, ()> {
+        let characteristic =
+            service
+                .service
+                .add_characteristic(&uuid, properties, characteristic_len, false)?;
+
+        let descriptor_handle =
+            characteristic.add_descriptor(Uuid::Uuid128(UUID_CHARACTERISTIC_ID), 2)?;
+
+        //rprintln!( "Descriptor handle: {:?}", descriptor_handle);
 
         let response = perform_command(|rc| {
             rc.set_descriptor_value(&DescriptorValueParameters {
                 service_handle: characteristic.service,
                 characteristic_handle: characteristic.characteristic,
-                descriptor_handle: descriptor_handle.descriptor_handle,
+                descriptor_handle,
                 offset: 0,
                 value: &instance_id.to_le_bytes(),
             })
             .map_err(|_| nb::Error::Other(()))
         })?;
 
-        // let _ = writeln!(
+        // rprintln!(
         //     serial,
         //     "Response to setting descriptor value: {:?}",
         //     response
@@ -446,22 +546,27 @@ impl HapCharacteristic {
 
         Ok(HapCharacteristic {
             characteristic,
-            characteristic_id: descriptor_handle.descriptor_handle,
+            characteristic_id: descriptor_handle,
             max_len: characteristic_len,
         })
     }
 
     fn set_value(&self, value: &[u8]) -> Result<(), ()> {
+        rprintln!(
+            "{:?}: value={:x?}",
+            self.characteristic.characteristic,
+            value
+        );
         self.characteristic.set_value(value)
     }
 }
 
-fn init_gap_and_gatt(serial: &mut impl Write) -> Result<(), ()> {
-    let response = perform_command(|rc| {
+fn init_gap_and_gatt() -> Result<(), ()> {
+    let response = perform_command(|rc: &mut RadioCopro| {
         rc.write_config_data(&ConfigData::public_address(get_bd_addr()).build())
     })?;
 
-    let _ = writeln!(serial, "Response to write_config_data: {:?}", response);
+    rprintln!("Response to write_config_data: {:?}", response);
 
     perform_command(|rc| {
         rc.write_config_data(&ConfigData::random_address(get_random_addr()).build())
@@ -493,7 +598,7 @@ fn init_gap_and_gatt(serial: &mut impl Write) -> Result<(), ()> {
         ble_context.dev_name_handle = Some(dev_name_handle);
         ble_context.appearence_handle = Some(appearance_handle);
     } else {
-        let _ = writeln!(serial, "Unexpected response to init_gap command");
+        rprintln!("Unexpected response to init_gap command");
         return Err(());
     }
 
@@ -502,50 +607,10 @@ fn init_gap_and_gatt(serial: &mut impl Write) -> Result<(), ()> {
             service_handle: ble_context.service_handle.unwrap(),
             characteristic_handle: ble_context.dev_name_handle.unwrap(),
             offset: 0,
-            value: b"hokt",
+            value: BT_NAME,
         })
         .map_err(|_| nb::Error::Other(()))
     })?;
-
-    // Protocol information service
-
-    let protocol_information_service = Service::new(
-        ServiceType::Primary,
-        Uuid::Uuid128(UUID_PROTOCOL_INFORMATION),
-        20,
-    )?;
-
-    let service_instance_characteristic = protocol_information_service.add_characteristic(
-        &Uuid::Uuid128(UUID_SERVICE_INSTANCE),
-        CharacteristicProperty::READ,
-        2,
-        false,
-    )?;
-
-    service_instance_characteristic.set_value(&[0x10, 0x00])?;
-
-    let _ = writeln!(serial, "Added service: {:?}", protocol_information_service);
-
-    let protocol_version_characteristic = HapCharacteristic::build(
-        &protocol_information_service,
-        0x12,
-        Uuid::Uuid128(UUID_VERSION_CHARACTERISTIC),
-        CharacteristicProperty::READ | CharacteristicProperty::WRITE,
-        64,
-    )?;
-
-    protocol_version_characteristic.set_value(b"2.2.0\0")?;
-
-    let service_signature_characteristic = HapCharacteristic::build(
-        &protocol_information_service,
-        0x11,
-        Uuid::Uuid128(UUID_SERVICE_SIGNATURE),
-        CharacteristicProperty::READ | CharacteristicProperty::WRITE,
-        2,
-    )?;
-
-    // Indicate that the protocol service support configuration (7.4.3, p. 121, HAP Specification)
-    service_signature_characteristic.set_value(&[0x04, 0x00])?;
 
     // hci_commands_queue
     //     .enqueue(|rc, cx| {
@@ -569,12 +634,14 @@ fn init_gap_and_gatt(serial: &mut impl Write) -> Result<(), ()> {
     //     .ok();
 
     // Acessory information service
+    rprintln!("Accessory information service");
 
     //cx.next_service = BleServices::AccessoryInformation;
-    let accessory_service = Service::new(
+    let accessory_service = HapService::new(
         ServiceType::Primary,
         Uuid::Uuid128(UUID_ACCESSORY_INFORMATION),
-        20,
+        30,
+        1,
     )?;
 
     // add the
@@ -612,7 +679,7 @@ fn init_gap_and_gatt(serial: &mut impl Write) -> Result<(), ()> {
         CharacteristicProperty::READ | CharacteristicProperty::WRITE,
         10,
     )?;
-    information_name_characteristic.set_value(b"hokt\0")?;
+    information_name_characteristic.set_value(BT_NAME)?;
 
     let information_serial_number_characteristic = HapCharacteristic::build(
         &accessory_service,
@@ -641,29 +708,46 @@ fn init_gap_and_gatt(serial: &mut impl Write) -> Result<(), ()> {
     )?;
     information_hardware_revision_characteristic.set_value(b"1.0.0\0")?;
 
-    let accessory_service_instance_characteristic = accessory_service.add_characteristic(
-        &Uuid::Uuid128(UUID_SERVICE_INSTANCE),
-        CharacteristicProperty::READ,
-        2,
-        false,
+    // Protocol information service
+
+    rprintln!("Protocol information service");
+
+    let protocol_information_service = HapService::new(
+        ServiceType::Primary,
+        Uuid::Uuid128(UUID_PROTOCOL_INFORMATION),
+        10,
+        0x10,
     )?;
 
-    accessory_service_instance_characteristic.set_value(&[0x1, 0x00])?;
+    let _service_signature_characteristic = HapCharacteristic::build(
+        &protocol_information_service,
+        0x11,
+        Uuid::Uuid128(UUID_SERVICE_SIGNATURE),
+        CharacteristicProperty::READ | CharacteristicProperty::WRITE,
+        100,
+    )?;
+
+    // Indicate that the protocol service support configuration (7.4.3, p. 121, HAP Specification)
+    //service_signature_characteristic.set_value(&[0x04, 0x00])?;
+
+    let protocol_version_characteristic = HapCharacteristic::build(
+        &protocol_information_service,
+        0x12,
+        Uuid::Uuid128(UUID_VERSION_CHARACTERISTIC),
+        CharacteristicProperty::READ | CharacteristicProperty::WRITE,
+        64,
+    )?;
+
+    protocol_version_characteristic.set_value(b"2.2.0\0")?;
 
     // Add Pairing service
-    let pairing_service = Service::new(
+    rprintln!("Pairing service");
+    let pairing_service = HapService::new(
         ServiceType::Primary,
         Uuid::Uuid128(UUID_PAIRING_SERVICE),
-        10,
+        20,
+        0x20,
     )?;
-
-    let pairing_service_instance_id = pairing_service.add_characteristic(
-        &Uuid::Uuid128(UUID_SERVICE_INSTANCE),
-        CharacteristicProperty::READ,
-        2,
-        false,
-    )?;
-    pairing_service_instance_id.set_value(&[0x20, 0x00])?;
 
     let pair_setup = HapCharacteristic::build(
         &pairing_service,
@@ -809,7 +893,7 @@ fn get_erk() -> EncryptionKey {
 
 fn init_homekit() -> Result<(), ()> {
     // Disable scan response
-    perform_command(|rc| {
+    perform_command(|rc: &mut RadioCopro| {
         rc.le_set_scan_response_data(&[])
             .map_err(|_| nb::Error::Other(()))
     })?;
@@ -825,7 +909,7 @@ fn init_homekit() -> Result<(), ()> {
             address_type: OwnAddressType::Public,
             filter_policy: AdvertisingFilterPolicy::AllowConnectionAndScan,
             // Local name should be empty for the device to be recognized as an Eddystone beacon
-            local_name: Some(LocalName::Complete(b"hokt")),
+            local_name: Some(LocalName::Complete(BT_NAME)),
             advertising_data: &[],
             conn_interval: (None, None),
         };
@@ -845,7 +929,7 @@ fn init_homekit() -> Result<(), ()> {
             0x44, 0x55, 0x66, 0x44, 0x55, 0x66, // Device ID
             0x00, 0x0A, // ACID G
             0x00, 0x01, // GSN
-            0x1,  // Configuration number
+            0x2,  // Configuration number
             0x2,  // CV
                   //0x00, 0x00, 0x00, 0x00, // Secure Hash,
         ];
