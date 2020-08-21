@@ -6,7 +6,7 @@ on:
 name: CI
 
 jobs:
-  check:
+  build:
     runs-on: ubuntu-latest
 
     steps:
@@ -20,7 +20,8 @@ jobs:
           override: true
           target: thumbv7em-none-eabihf
 
-      - name: Run cargo check
+      - name: Run cargo build
         uses: actions-rs/cargo@v1
         with:
-          command: check
+          command: build
+          args: --release
