@@ -22,5 +22,5 @@ jobs:
         uses: orf/cargo-bloat-action@v1
         with:
           by_function: 1
-          bloat_args: --release --target thumb7em-none-eabihf --verbose
+          bloat_args: --release --target thumbv7em-none-eabihf --verbose
           token: ${{ secrets.GITHUB_TOKEN }}
