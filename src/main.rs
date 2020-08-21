@@ -68,7 +68,7 @@ pub type HciCommandsQueue = Queue<
 /// Advertisement interval in milliseconds.
 const ADV_INTERVAL_MS: u64 = 250;
 
-const BT_NAME: &[u8] = b"hakt\0";
+const BT_NAME: &[u8] = b"hokt";
 const BLE_GAP_DEVICE_NAME_LENGTH: u8 = BT_NAME.len() as u8;
 
 #[derive(Debug, Default)]

@@ -3,6 +3,8 @@ name = "stm32wb55-homekit"
 version = "0.1.0"
 authors = ["Dominik Boehi <dominik.boehi@gmail.com>"]
 edition = "2018"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/tiwalun/stm32wb55-homekit"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -14,7 +16,7 @@ test = false
 [dependencies]
 stm32wb55 = { version = "0.1.0" }
 stm32wb-hal = { version = "0.1.1" }
-bluetooth-hci =  "0.1"
+bluetooth-hci =  { version = "0.1.0"}
 bbqueue = "0.4.8"
 
 
@@ -49,7 +51,7 @@ debug = true
 lto = true
 
 [patch.crates-io]
-bluetooth-hci = { path = "../bluetooth-hci" }
+bluetooth-hci = { git = "https://github.com/Tiwalun/bluetooth-hci", branch = "add-data-len-phy-update-events" }
 
 # Patched version with updated cortex-m-rt
 stm32wb-pac = { git = "https://github.com/Tiwalun/stm32wb-pac"}
