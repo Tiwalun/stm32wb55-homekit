@@ -1,3 +1,6 @@
+[alias]
+t = "cargo test --target"
+
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
 runner = "probe-run --chip stm32wb55ccux"
 
