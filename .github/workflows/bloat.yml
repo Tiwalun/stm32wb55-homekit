@@ -21,6 +21,6 @@ jobs:
       - name: Run cargo bloat
         uses: orf/cargo-bloat-action@v1
         with:
-          by_function: 1
+          by_function: true
           bloat_args: --release --target thumbv7em-none-eabihf
           token: ${{ secrets.GITHUB_TOKEN }}
