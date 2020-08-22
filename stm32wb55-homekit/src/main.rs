@@ -41,8 +41,12 @@ use bluetooth_hci::{
     BdAddr, Status,
 };
 
+use homekit_ble::HapPdu;
 use stm32wb55::{
-    event::{command::GattCharacteristicDescriptor, AttributeHandle, Stm32Wb5xEvent},
+    event::{
+        command::GattCharacteristicDescriptor, AttributeHandle, GattAttributeModified,
+        Stm32Wb5xEvent,
+    },
     gap::{
         AdvertisingDataType, AdvertisingType, Commands as GapCommands, DiscoverableParameters,
         LocalName, Role,
@@ -181,7 +185,7 @@ fn run() {
 
     rprintln!("Received packet: {:?}", reset_response);
 
-    init_gap_and_gatt().expect("Failed to initialize GAP and GATT");
+    let homekit_accessory = init_gap_and_gatt().expect("Failed to initialize GAP and GATT");
 
     rprintln!("Succesfully initialized GAP and GATT");
 
@@ -189,11 +193,43 @@ fn run() {
 
     rprintln!("Succesfully initialized Homekit");
 
+    // Temporary hack to determine handles for HAP services
+    let hap_handle_range = homekit_accessory.minimum_handle..=homekit_accessory.maximum_handle;
+
     loop {
         let response = block!(receive_event());
 
         rprintln!("Received event: {:x?}", response);
+
+        if let Ok(Packet::Event(event)) = response {
+            if let Event::Vendor(event) = event {
+                match event {
+                    Stm32Wb5xEvent::GattAttributeModified(modified) => {
+                        rprintln!("Handling write to attribute {:?}", modified.attr_handle);
+
+                        if hap_handle_range.contains(&modified.attr_handle.0) {
+                            // Try to parse a HAP PDU
+                            if let Ok(pdu) = HapPdu::parse(modified.data()) {
+                                rprintln!("PDU: {:?}", pdu);
+                            } else {
+                                rprintln!("Failed to parse HAP PDU.");
+                            }
+                        }
+                    }
+                    Stm32Wb5xEvent::AttReadPermitRequest(_) => {}
+                    // Ignore other events
+                    _ => {}
+                }
+            }
+        }
     }
+}
+
+struct HapAccessory {
+    /// Minimum handle which is part of this accessory
+    minimum_handle: u16,
+    /// Maximum handle which is part of this accessory
+    maximum_handle: u16,
 }
 
 fn perform_command(
@@ -327,6 +363,7 @@ impl Service {
         &self,
         uuid: &Uuid,
         properties: CharacteristicProperty,
+        event_mask: CharacteristicEvent,
         value_len: usize,
         is_variable: bool,
     ) -> Result<Characteristic, ()> {
@@ -343,7 +380,7 @@ impl Service {
                 is_variable,
 
                 // Initially hardcoded
-                gatt_event_mask: CharacteristicEvent::ATTRIBUTE_WRITE,
+                gatt_event_mask: event_mask,
                 encryption_key_size: EncryptionKeySize::with_value(16).unwrap(),
                 fw_version_before_v72: false,
                 security_permissions: CharacteristicPermission::empty(),
@@ -488,6 +525,7 @@ impl HapService {
         let instance_id_characteristic = service.add_characteristic(
             &Uuid::Uuid128(UUID_SERVICE_INSTANCE),
             CharacteristicProperty::READ,
+            CharacteristicEvent::empty(),
             2,
             false,
         )?;
@@ -517,10 +555,13 @@ impl HapCharacteristic {
         properties: CharacteristicProperty,
         characteristic_len: usize,
     ) -> Result<Self, ()> {
-        let characteristic =
-            service
-                .service
-                .add_characteristic(&uuid, properties, characteristic_len, false)?;
+        let characteristic = service.service.add_characteristic(
+            &uuid,
+            properties,
+            CharacteristicEvent::CONFIRM_READ | CharacteristicEvent::ATTRIBUTE_WRITE,
+            characteristic_len,
+            false,
+        )?;
 
         let descriptor_handle =
             characteristic.add_descriptor(Uuid::Uuid128(UUID_CHARACTERISTIC_ID), 2)?;
@@ -561,7 +602,7 @@ impl HapCharacteristic {
     }
 }
 
-fn init_gap_and_gatt() -> Result<(), ()> {
+fn init_gap_and_gatt() -> Result<HapAccessory, ()> {
     let response = perform_command(|rc: &mut RadioCopro| {
         rc.write_config_data(&ConfigData::public_address(get_bd_addr()).build())
     })?;
@@ -643,6 +684,8 @@ fn init_gap_and_gatt() -> Result<(), ()> {
         30,
         1,
     )?;
+
+    let minimum_handle = accessory_service.service.handle.0;
 
     // add the
 
@@ -749,6 +792,9 @@ fn init_gap_and_gatt() -> Result<(), ()> {
         0x20,
     )?;
 
+    // TODO: not hardcoded value here
+    let maximum_handle = pairing_service.service.handle.0 + 20;
+
     let pair_setup = HapCharacteristic::build(
         &pairing_service,
         0x22,
@@ -779,7 +825,10 @@ fn init_gap_and_gatt() -> Result<(), ()> {
         1,
     )?;
 
-    Ok(())
+    Ok(HapAccessory {
+        minimum_handle,
+        maximum_handle,
+    })
 }
 
 /// Build a Homekit UUID from the first four  bytes of the UUID
