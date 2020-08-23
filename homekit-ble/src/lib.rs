@@ -4,10 +4,12 @@
 
 use core::convert::{TryFrom, TryInto};
 
+pub mod tlv;
+
 #[derive(Debug)]
 pub enum HapPdu<'a> {
     Request(HapRequest<'a>),
-    Response(HapResponse),
+    Response(HapResponse<'a>),
 }
 
 impl HapPdu<'_> {
@@ -61,11 +63,11 @@ impl HapPdu<'_> {
 pub struct HapRequest<'a> {
     iid_size: IidSize,
 
-    op_code: OpCode,
+    pub op_code: OpCode,
 
-    tid: u8,
+    pub tid: u8,
 
-    char_id: u16,
+    pub char_id: u16,
 
     data: Option<&'a [u8]>,
 }
@@ -114,19 +116,92 @@ enum IidSize {
     Bit64,
 }
 
+/// HAP Status
+///
+/// See Table 7-37
+#[derive(Debug, Copy, Clone)]
+pub enum HapStatus {
+    Success = 0x0,
+    UnsupportedPdu = 0x1,
+    MaxProcedures = 0x2,
+    InsufficientAuthorization = 0x3,
+    InvalidInstanceId = 0x4,
+    InsufficientAuthentication = 0x5,
+    InvalidRequest = 0x6,
+}
+
 #[derive(Debug)]
-pub struct HapResponse {}
+pub struct HapResponse<'a> {
+    tid: u8,
+
+    status: HapStatus,
+
+    data: &'a [u8],
+}
+
+impl HapResponse<'_> {
+    pub fn new(tid: u8, status: HapStatus, data: &[u8]) -> HapResponse<'_> {
+        HapResponse { tid, status, data }
+    }
+
+    /// Write the response into a buffer.
+    pub fn write_into(&self, buffer: &mut [u8]) -> Result<(), Error> {
+        if self.size() > buffer.len() {
+            return Err(Error::InsufficientBuffer);
+        }
+
+        // Data longer than u16 MAX is not supported by the
+        // protocol
+        if self.data.len() > (u16::MAX as usize) {
+            panic!("Data for HapResponse has to be < u16::MAX");
+        }
+
+        // TODO: Support fragmentation,
+
+        // Control field fixed to 2 for now (indicating unfragmented response)
+        buffer[0] = 2;
+
+        buffer[1] = self.tid;
+        buffer[2] = self.status as u8;
+
+        if self.data.len() > 0 {
+            buffer[3] = self.data.len() as u8;
+            buffer[4] = (self.data.len() >> 8) as u8;
+
+            buffer[5..(5 + self.data.len())].copy_from_slice(&self.data);
+        }
+
+        Ok(())
+    }
+
+    /// Calculate the size of the response in bytes
+    pub fn size(&self) -> usize {
+        // Header consists of Control Field, TID, and Status
+        //
+        let header_len = 3;
+
+        // The body is optional
+        let body_len = if self.data.len() > 0 {
+            self.data.len() + 2
+        } else {
+            0
+        };
+
+        header_len + body_len
+    }
+}
 
 #[derive(Debug)]
 pub enum Error {
     BadLength,
     UnsupportedPduType(u8),
     UnknownOpCode(u8),
+    InsufficientBuffer,
 }
 
 /// HAP Opcode, defined in Table 7-8
-#[derive(Debug)]
-enum OpCode {
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub enum OpCode {
     CharacteristicSignatureRead,
     CharacteristicWrite,
     CharacteristicRead,
@@ -164,10 +239,17 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_parsing_pdu() {
-        let rx_data = [0, 6, 1, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    fn test_parsing_service_signature_pdu() {
+        let rx_data = [0, 6, 1, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
-        let _pdu = HapPdu::parse(&rx_data).unwrap();
+        let pdu = HapPdu::parse(&rx_data).unwrap();
+
+        if let HapPdu::Request(request) = pdu {
+            assert_eq!(request.op_code, OpCode::ServiceSignatureRead);
+            assert_eq!(request.char_id, 0x10);
+        } else {
+            panic!("Expected HapPdu::Request, got {:?}", pdu);
+        }
     }
 
     #[test]

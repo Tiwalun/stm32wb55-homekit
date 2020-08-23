@@ -325,7 +325,7 @@ version = "0.1.0"
 dependencies = [
  "as-slice",
  "bbqueue",
- "bit_field",
+ "bitflags",
  "bluetooth-hci",
  "byteorder",
  "cortex-m",
