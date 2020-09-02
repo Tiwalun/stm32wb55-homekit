@@ -69,7 +69,7 @@ pub struct HapRequest<'a> {
 
     pub char_id: u16,
 
-    data: Option<&'a [u8]>,
+    pub data: Option<&'a [u8]>,
 }
 
 impl HapRequest<'_> {
@@ -89,12 +89,34 @@ impl HapRequest<'_> {
 
         // TODO: Support data
 
+        let pdu_data = if data.len() > 4 {
+            // We need at least two bytes for the body length
+            if data.len() < 6 {
+                return Err(Error::BadLength);
+            }
+
+            let body_len: u16 = u16::from_le_bytes((&data[4..6]).try_into().unwrap());
+
+            // Check for fragmentation
+            if body_len as usize > data.len() - 4 {
+                todo!(
+                    "Fragmentation not implemented (body_len={}, data_len={})",
+                    body_len,
+                    data.len()
+                );
+            }
+
+            Some(&data[6..])
+        } else {
+            None
+        };
+
         Ok(HapRequest {
             iid_size,
             op_code,
             tid,
             char_id,
-            data: None,
+            data: pdu_data,
         })
     }
 }
@@ -258,5 +280,20 @@ mod test {
         let rx_data = [0u8; 4];
 
         assert!(matches!(HapPdu::parse(&rx_data), Err(Error::BadLength)));
+    }
+
+    #[test]
+    fn test_characteristic_write() {
+        let rx_data = [
+            0x0, 0x2, 0x5d, 0x22, 0x0, 0xb, 0x0, 0x1, 0x6, 0x0, 0x1, 0x0, 0x6, 0x1, 0x1, 0x9,
+        ];
+
+        let pdu = HapPdu::parse(&rx_data).unwrap();
+
+        if let HapPdu::Request(request) = pdu {
+            assert_eq!(request.tid, 0x5d);
+        } else {
+            panic!("Failed to parse HAP PDU");
+        }
     }
 }

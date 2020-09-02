@@ -36,7 +36,7 @@ pub const UUID_ACCESSORY_INFORMATION_MANUFACTURER: [u8; 16] = apple_uuid(0x20);
 pub const UUID_ACCESSORY_INFORMATION_MODEL: [u8; 16] = apple_uuid(0x21);
 
 /// public.hap.characteristic.name (9.62, p. 188)
-pub const UUID_ACCESSORY_INFORMATION_NAME: [u8; 16] = apple_uuid(0x23);
+pub const UUID_CHARACTERISTIC_NAME: [u8; 16] = apple_uuid(0x23);
 
 // public.hap.characteristic.firmware.revision (9.87, p. 201)
 pub const UUID_ACCESSORY_INFORMATION_SERIAL_NUMBER: [u8; 16] = apple_uuid(0x30);
@@ -54,6 +54,11 @@ pub const UUID_PAIRING_VERIFY: [u8; 16] = apple_uuid(0x4E);
 
 pub const UUID_PAIRING_FEATURES: [u8; 16] = apple_uuid(0x4F);
 pub const UUID_PAIRING_PAIRINGS: [u8; 16] = apple_uuid(0x50);
+
+pub const UUID_LIGHTBULB_SERVICE: [u8; 16] = apple_uuid(0x43);
+
+// characteristic.on
+pub const UUID_CHARACTERISTIC_ON: [u8; 16] = apple_uuid(0x25);
 
 /// UUID for the Service Instance ID.
 ///

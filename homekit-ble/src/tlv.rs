@@ -1,6 +1,7 @@
 //! Support for TLV8 data structures
 //!
 
+#[derive(Debug)]
 pub enum Value<'a> {
     Bytes(&'a [u8]),
     Integer8(u8),
@@ -32,6 +33,7 @@ impl From<u32> for Value<'_> {
     }
 }
 
+#[derive(Debug)]
 pub struct Tlv<'a> {
     tlv_type: u8,
     value: Value<'a>,
@@ -85,6 +87,52 @@ impl<'a> Tlv<'a> {
 
             index
         }
+    }
+
+    pub fn parse(data: &[u8]) -> TlvReader {
+        TlvReader { offset: 0, data }
+    }
+}
+
+pub struct TlvReader<'data> {
+    offset: usize,
+    data: &'data [u8],
+}
+
+impl<'data> Iterator for TlvReader<'data> {
+    type Item = Tlv<'data>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.data.len() < (self.offset + 2) {
+            // TLV needs at least two bytes
+            return None;
+        }
+
+        let mut current_offset = self.offset;
+
+        let tlv_type = self.data[current_offset];
+
+        current_offset += 1;
+
+        let length = self.data[current_offset] as usize;
+
+        current_offset += 1;
+
+        // Check if the data is all available
+        if self.offset + length >= self.data.len() {
+            return None;
+        }
+
+        let tlv_data = &self.data[current_offset..current_offset + length];
+
+        current_offset += length;
+
+        self.offset = current_offset;
+
+        Some(Tlv {
+            tlv_type,
+            value: Value::Bytes(tlv_data),
+        })
     }
 }
 
