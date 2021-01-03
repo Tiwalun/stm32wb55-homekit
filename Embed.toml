@@ -2,20 +2,29 @@
 chip = "stm32wb55ccux"
 log_level = "WARN"
 
+connect_under_reset = true
+
 [default.flashing]
 enabled = "true"
 
 [default.rtt]
-enabled = "true"
+enabled = "false"
 timeout = 20000
+log_enabled = true
 
 [default.probe]
-speed = 950
+speed = 4000
 
+[log.flashing]
+enabled = false
 
 [log.rtt]
 enabled = "true"
 timeout = 20000
+log_enabled = true
 
 [log.probe]
-speed = 950
+speed = 4000
+
+[log.reset]
+enabled = true

@@ -6,6 +6,7 @@ runner = "probe-run --chip stm32wb55ccux"
 
 rustflags = [
   "-C", "link-arg=-Tlink.x",
+  "-C", "link-arg=-nmagic",
 # "-C", "linker=arm-none-eabi-ld",
 ]
 

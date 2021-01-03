@@ -9,7 +9,7 @@ use rtt_target::{rprintln, rtt_init_print};
 
 extern crate stm32wb_hal as hal;
 
-use core::time::Duration;
+use core::{convert::TryFrom, time::Duration};
 
 use cortex_m_rt::{entry, exception};
 use nb::block;
@@ -32,7 +32,10 @@ use bluetooth_hci::{
 
 use ble::{perform_command, receive_event, setup_coprocessor, Characteristic, RadioCopro};
 use hap::{GattFormat, HapCharacteristic, HapProperties, HapService};
-use homekit_ble::{tlv::Tlv, HapPdu, HapResponse, HapStatus, OpCode};
+use homekit_ble::{
+    tlv::{Tlv, Value},
+    HapPdu, HapResponse, HapStatus, OpCode,
+};
 use stm32wb55::{
     event::{AttReadPermitRequest, AttributeHandle, GattAttributeModified, Stm32Wb5xEvent},
     gap::{
@@ -64,8 +67,8 @@ const BLE_GAP_DEVICE_NAME_LENGTH: u8 = BT_NAME.len() as u8;
 
 #[entry]
 fn entry() -> ! {
-    rtt_init_print!(BlockIfFull, 4096);
-    //rtt_init_print!(NoBlockSkip, 4096);
+    //rtt_init_print!(BlockIfFull, 4096);
+    rtt_init_print!(NoBlockSkip, 4096);
     run();
 
     loop {
@@ -115,7 +118,7 @@ fn run() {
         ble_buffer_size: 0,
         num_attr_record: 100,
         num_attr_serv: 10,
-        attr_value_arr_size: 2788,
+        attr_value_arr_size: 3500, //2788,
         num_of_links: 8,
         extended_packet_length_enable: 1,
         pr_write_list_size: 0x3A,
@@ -162,7 +165,24 @@ fn run() {
         rprintln!("Received event: {:x?}", response);
 
         if let Ok(Packet::Event(event)) = response {
-            homekit_accessory.handle_event(&event);
+            match event {
+                Event::DisconnectionComplete(_state) => {
+                    // Enter advertising mode again
+                    // Put the device in a connectable mode
+                    perform_command(|rc| {
+                        rc.set_discoverable(&DISCOVERY_PARAMS)
+                            .map_err(|_| nb::Error::Other(()))
+                    })
+                    .expect("Failed to enable discoverable mode again");
+
+                    perform_command(|rc| {
+                        rc.update_advertising_data(&ADVERTISING_DATA[..])
+                            .map_err(|_| nb::Error::Other(()))
+                    })
+                    .expect("Failed to update advertising data");
+                }
+                other => homekit_accessory.handle_event(&other),
+            }
         }
     }
 }
@@ -431,6 +451,8 @@ struct PairingService {
     verify: HapCharacteristic,
     features: HapCharacteristic,
     pairings: HapCharacteristic,
+
+    pairing_state: PairingSetupState,
 }
 
 impl PairingService {
@@ -460,12 +482,13 @@ impl PairingService {
             GattFormat::Data,
             512,
         )?;
+
         let pairing_features = HapCharacteristic::build(
             &pairing_service,
             0x24,
             UUID_PAIRING_FEATURES,
             CharacteristicProperty::READ | CharacteristicProperty::WRITE,
-            HapProperties::READ | HapProperties::WRITE,
+            HapProperties::READ, // | HapProperties::WRITE,
             GattFormat::Uint8,
             512,
         )?;
@@ -474,9 +497,9 @@ impl PairingService {
             0x25,
             UUID_PAIRING_PAIRINGS,
             CharacteristicProperty::READ | CharacteristicProperty::WRITE,
-            HapProperties::READ | HapProperties::WRITE,
+            HapProperties::SECURE_READ | HapProperties::SECURE_WRITE,
             GattFormat::Data,
-            60,
+            512,
         )?;
 
         Ok(Self {
@@ -485,6 +508,7 @@ impl PairingService {
             verify: pair_verify,
             features: pairing_features,
             pairings: pairing_pairings,
+            pairing_state: PairingSetupState::M1,
         })
     }
 
@@ -527,7 +551,9 @@ impl PairingService {
                 }
                 OpCode::CharacteristicRead => {
                     if pdu.char_id == self.features.instance_id {
-                        // response is 0
+                        // Read of the Feature Characteristic
+
+                        // response is 0 (this means no)
                         let mut response_data = [0u8; 3];
 
                         let tlv = Tlv::new(0x01, 0u8);
@@ -549,6 +575,12 @@ impl PairingService {
                         self.features
                             .set_value(&resp_buff[..response.size()])
                             .expect("Failed to set value for ServiceSignatureRead");
+                    } else {
+                        rprintln!(
+                            "Characteristic ID mismatch: self.id={}, pdu.char_id={}",
+                            self.features.instance_id,
+                            pdu.char_id
+                        );
                     }
                 }
                 OpCode::CharacteristicWrite => {
@@ -556,13 +588,61 @@ impl PairingService {
                         // Write to the setup characteristic
 
                         if let Some(data) = pdu.data {
-                            // parse tlv data
+                            let mut write_with_response = false;
+
+                            let mut body: Option<&[u8]> = None;
+
                             for tlv in Tlv::parse(data) {
-                                rprintln!("TLV: {:?}", tlv);
+                                // The type of these TLV should be one of the type specified in
+                                // the interface specification in Table 7-10
+                                match tlv.tlv_type {
+                                    // HAP-Param-Value
+                                    0x1 => match tlv.value {
+                                        Value::Bytes(value) => {
+                                            body = Some(value);
+                                        }
+                                        _ => rprintln!("Unexpected TLV body!"),
+                                    },
+                                    // HAP-Param-Return-Response
+                                    0x9 => {
+                                        write_with_response = true;
+                                    }
+                                    _ => {
+                                        rprintln!("Unknown TLV in Characteristic-Write");
+                                    }
+                                }
+                            }
+
+                            if let Some(body) = body {
+                                let mut state = None;
+                                let mut method = None;
+
+                                for tlv in Tlv::parse(body) {
+                                    match tlv.tlv_type {
+                                        // PairingMethod
+                                        0x0 => {
+                                            method = Some(tlv);
+                                        }
+                                        0x6 => {
+                                            state = Some(tlv);
+                                        }
+                                        // Ignore other TLVs,
+                                        _ => (),
+                                    }
+                                }
+
+                                if state.is_some() && method.is_some() {
+                                    let method = PairingMethod::try_from(method.unwrap())
+                                        .expect("Error parsing pairing method");
+
+                                    rprintln!("Pairing State: {:?}", state.unwrap().value);
+                                    rprintln!("Pairing Method: {:?}", method);
+                                }
                             }
                         }
                     }
                 }
+
                 // Ignore other op codes
                 _ => {}
             }
@@ -572,6 +652,62 @@ impl PairingService {
 
         Ok(())
     }
+}
+
+enum PairingSetupState {
+    M1,
+    M2,
+    M3,
+    M4,
+    M5,
+    M6,
+}
+
+/// Method used for pairing.
+///
+/// Encoded as a TLV with type 0x00, and integer format.
+#[derive(Debug)]
+enum PairingMethod {
+    PairSetup,
+    PairSetupWithAuth,
+    PairVerify,
+    AddPairing,
+    RemovePairing,
+    ListPairings,
+    Reserved,
+}
+
+impl TryFrom<Tlv<'_>> for PairingMethod {
+    type Error = TlvParseError;
+
+    fn try_from(value: Tlv) -> Result<Self, Self::Error> {
+        if value.tlv_type != 0x00 {
+            return Err(TlvParseError::TypeMismatch);
+        }
+
+        let int_value = match value.value {
+            Value::Bytes(data) => data[0],
+            _ => return Err(TlvParseError::DataMismatch),
+        };
+
+        let method = match int_value {
+            0 => PairingMethod::PairSetup,
+            1 => PairingMethod::PairSetupWithAuth,
+            2 => PairingMethod::PairVerify,
+            3 => PairingMethod::AddPairing,
+            4 => PairingMethod::RemovePairing,
+            5 => PairingMethod::ListPairings,
+            _ => PairingMethod::Reserved,
+        };
+
+        Ok(method)
+    }
+}
+
+#[derive(Debug)]
+enum TlvParseError {
+    TypeMismatch,
+    DataMismatch,
 }
 
 // handle pairing
@@ -806,6 +942,35 @@ fn get_erk() -> EncryptionKey {
     EncryptionKey(BLE_CFG_ERK)
 }
 
+const DISCOVERY_PARAMS: DiscoverableParameters = DiscoverableParameters {
+    advertising_type: AdvertisingType::ConnectableUndirected,
+    advertising_interval: Some((
+        Duration::from_millis(ADV_INTERVAL_MS),
+        Duration::from_millis(ADV_INTERVAL_MS),
+    )),
+    address_type: OwnAddressType::Public,
+    filter_policy: AdvertisingFilterPolicy::AllowConnectionAndScan,
+    local_name: Some(LocalName::Complete(BT_NAME)),
+    advertising_data: &[],
+    conn_interval: (None, None),
+};
+
+const ADVERTISING_DATA: [u8; 19] = [
+    0x12, // Length
+    0xff, // Manufacturer Data
+    0x4c, 0x00, // Apple ID
+    0x06, // Type
+    0x2D, // STL
+    //0x31,
+    0x01, // SF
+    0x44, 0x75, 0x26, 0x44, 0x58, 0xA3, // Device ID
+    0x05, 0x00, // ACID G - Light Bulb
+    0x01, 0x00, // GSN
+    0x1,  // Configuration number
+    0x2,  // CV
+          //0x00, 0x00, 0x00, 0x00, // Secure Hash,
+];
+
 fn init_homekit() -> Result<(), ()> {
     // Disable scan response
     perform_command(|rc: &mut RadioCopro| {
@@ -815,43 +980,14 @@ fn init_homekit() -> Result<(), ()> {
 
     // Put the device in a connectable mode
     perform_command(|rc| {
-        let params = DiscoverableParameters {
-            advertising_type: AdvertisingType::ConnectableUndirected,
-            advertising_interval: Some((
-                Duration::from_millis(ADV_INTERVAL_MS),
-                Duration::from_millis(ADV_INTERVAL_MS),
-            )),
-            address_type: OwnAddressType::Public,
-            filter_policy: AdvertisingFilterPolicy::AllowConnectionAndScan,
-            local_name: Some(LocalName::Complete(BT_NAME)),
-            advertising_data: &[],
-            conn_interval: (None, None),
-        };
-
-        rc.set_discoverable(&params)
+        rc.set_discoverable(&DISCOVERY_PARAMS)
             .map_err(|_| nb::Error::Other(()))
     })?;
 
     // accessory category: lightbulb (-> lighting 5) (acid)
 
     perform_command(|rc| {
-        let advertising_data = [
-            0x12, // Length
-            0xff, // Manufacturer Data
-            0x4c, 0x00, // Apple ID
-            0x06, // Type
-            0x2D, // STL
-            //0x31,
-            0x01, // SF
-            0x44, 0x75, 0x26, 0x44, 0x58, 0xA3, // Device ID
-            0x05, 0x00, // ACID G - Light Bulb
-            0x01, 0x00, // GSN
-            0x1,  // Configuration number
-            0x2,  // CV
-                  //0x00, 0x00, 0x00, 0x00, // Secure Hash,
-        ];
-
-        rc.update_advertising_data(&advertising_data[..])
+        rc.update_advertising_data(&ADVERTISING_DATA[..])
             .map_err(|_| nb::Error::Other(()))
     })?;
 

@@ -182,11 +182,14 @@ impl HapCharacteristic {
     }
 
     pub fn set_value(&self, value: &[u8]) -> Result<(), ()> {
+        /*
         rprintln!(
             "{:?}: value={:x?}",
             self.characteristic.characteristic,
             value
         );
+        */
+
         self.characteristic.set_value(value)
     }
 }

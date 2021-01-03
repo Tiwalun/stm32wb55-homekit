@@ -35,8 +35,8 @@ impl From<u32> for Value<'_> {
 
 #[derive(Debug)]
 pub struct Tlv<'a> {
-    tlv_type: u8,
-    value: Value<'a>,
+    pub tlv_type: u8,
+    pub value: Value<'a>,
 }
 
 impl<'a> Tlv<'a> {

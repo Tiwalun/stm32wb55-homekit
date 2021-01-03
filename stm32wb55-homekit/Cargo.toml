@@ -9,7 +9,7 @@ repository = "https://github.com/tiwalun/stm32wb55-homekit"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [[bin]]
-name = "stm32w55-homekit"
+name = "stm32wb55-homekit"
 path = "src/main.rs"
 test = false
 
