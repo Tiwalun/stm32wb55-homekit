@@ -17,7 +17,7 @@ test = false
 homekit-ble = { version = "0.1.0", path = "../homekit-ble"}
 
 stm32wb55 = { version = "0.1.0" }
-stm32wb-hal = { version = "0.1.1" }
+stm32wb-hal = { version = "0.1.1", features = ["xG-package"] }
 bluetooth-hci =  { version = "0.1.0"}
 bbqueue = "0.4.8"
 

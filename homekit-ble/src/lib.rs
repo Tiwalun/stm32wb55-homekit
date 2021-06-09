@@ -7,6 +7,44 @@ use core::convert::{TryFrom, TryInto};
 pub mod tlv;
 
 #[derive(Debug)]
+#[repr(u8)]
+pub enum HapTlv {
+    Value = 0x01,
+    AdditionalAuthorizationData = 0x02,
+    ParamOrigin = 0x03,
+    /// Characteristic Type (UUID)
+    ChrType = 0x04,
+    /// Characteristic Type (UUID)
+    ChrInstanceId = 0x05,
+    /// Service Type (UUID)
+    SvcType = 0x06,
+    /// Service ID (2 Bytes)
+    SvcId = 0x07,
+    Ttl = 0x08,
+    ReturnResponse = 0x09,
+    /// HAP Characteristic Properties (2 Bytes)
+    HapChrProperties = 0x0A,
+    /// GATT User Description (UTF-8 String)
+    GattUserDescription = 0x0B,
+    /// GATT Format
+    GattFormat = 0x0C,
+    /// GATT Valid Range
+    GattValidRange = 0x0D,
+    /// HAP Step value
+    HapStepValue = 0x0e,
+    HapServiceProperties = 0x0f,
+    HapLinkedServices = 0x10,
+    HapValidValues = 0x11,
+    HapValuesRange = 0x12,
+}
+
+impl From<HapTlv> for u8 {
+    fn from(tlv: HapTlv) -> Self {
+        tlv as u8
+    }
+}
+
+#[derive(Debug)]
 pub enum HapPdu<'a> {
     Request(HapRequest<'a>),
     Response(HapResponse<'a>),
@@ -269,6 +307,20 @@ mod test {
         if let HapPdu::Request(request) = pdu {
             assert_eq!(request.op_code, OpCode::ServiceSignatureRead);
             assert_eq!(request.char_id, 0x10);
+        } else {
+            panic!("Expected HapPdu::Request, got {:?}", pdu);
+        }
+    }
+
+    #[test]
+    fn test_parsing_characteristic_signature_pdu() {
+        let rx_data = [0, 1, 23, 0, 0, 0];
+
+        let pdu = HapPdu::parse(&rx_data).unwrap();
+
+        if let HapPdu::Request(request) = pdu {
+            assert_eq!(request.op_code, OpCode::CharacteristicSignatureRead);
+            assert_eq!(request.char_id, 35);
         } else {
             panic!("Expected HapPdu::Request, got {:?}", pdu);
         }

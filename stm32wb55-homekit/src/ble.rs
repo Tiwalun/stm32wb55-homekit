@@ -1,11 +1,8 @@
 use bbqueue::{consts::U514, BBBuffer, ConstBBBuffer};
 use bluetooth_hci::{
     event::command::{CommandComplete, ReturnParameters},
-    host::{
-        uart::{Hci as UartHci, Packet},
-        AdvertisingFilterPolicy, EncryptionKey, Hci, OwnAddressType,
-    },
-    BdAddr, Event, Status,
+    host::uart::{Hci as UartHci, Packet},
+    Event, Status,
 };
 use core::fmt::Debug;
 use nb::block;

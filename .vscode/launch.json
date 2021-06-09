@@ -16,14 +16,33 @@
             ]
         },
         {
-            "type": "probe_rs",
-            "request": "attach",
-            "name": "probe-rs Test",
-            "program": "target/thumbv7em-none-eabihf/release/stm32wb55-homekit",
+            "preLaunchTask": "${defaultBuildTask}",
+            "type": "probe-rs-debug",
+            "request": "launch",
+            "name": "probe-rs Start",
+            "program_binary": "target/thumbv7em-none-eabihf/release/stm32wb55-homekit",
+            "probe": "1366:0101:000801020506",
             "chip": "stm32wb55ccux",
-            "server_mode": true,
-            "server_port": 8000,
-            "cwd": "${workspaceRoot}"
+            "cwd": "${workspaceRoot}",
+            "flashing_enabled": true,
+            "console_log_level": "Info",
+            "runtimeExecutable": "/home/dominik/Coding/probe-rs/target/debug/probe-rs-debugger"
+        },
+        {
+            "preLaunchTask": "${defaultBuildTask}",
+            "type": "probe-rs-debug",
+            "request": "attach",
+            "name": "probe-rs Attach",
+            "program_binary": "target/thumbv7em-none-eabihf/release/stm32wb55-homekit",
+            "probe": "1366:0101:000801020506",
+            "chip": "stm32wb55ccux",
+            "cwd": "${workspaceRoot}",
+            "server": "localhost:5001",
+            "flashing_enabled": false,
+            "reset_after_flashing": true,
+            //"connect_under_reset": true,
+            "console_log_level": "Info",
+            "runtimeExecutable": "/home/dominik/Coding/probe-rs/target/debug/probe-rs-debugger"
         }
     ]
 }

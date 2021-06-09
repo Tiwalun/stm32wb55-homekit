@@ -40,9 +40,9 @@ pub struct Tlv<'a> {
 }
 
 impl<'a> Tlv<'a> {
-    pub fn new(tlv_type: u8, value: impl Into<Value<'a>>) -> Self {
+    pub fn new(tlv_type: impl Into<u8>, value: impl Into<Value<'a>>) -> Self {
         Tlv {
-            tlv_type,
+            tlv_type: tlv_type.into(),
             value: value.into(),
         }
     }

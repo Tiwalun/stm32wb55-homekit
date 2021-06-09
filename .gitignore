@@ -1,1 +1,4 @@
 /target
+
+# Cargo Embed logs
+logs/

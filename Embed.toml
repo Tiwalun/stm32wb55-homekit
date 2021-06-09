@@ -2,18 +2,23 @@
 chip = "stm32wb55ccux"
 log_level = "WARN"
 
-connect_under_reset = true
+#connect_under_reset = true
 
 [default.flashing]
-enabled = "true"
+enabled = true
 
 [default.rtt]
-enabled = "false"
+enabled = true
 timeout = 20000
 log_enabled = true
 
 [default.probe]
-speed = 4000
+speed = 1000
+
+usb_vid = "1366"
+usb_pid = "0101"
+serial = "000801020506"
+
 
 [log.flashing]
 enabled = false

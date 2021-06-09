@@ -4,6 +4,11 @@ members = [
     "homekit-ble"
 ]
 
+# The test app uses std, so cannot be part of the workspace
+exclude = [
+    "homekit-tester"
+]
+
 [profile.release]
 codegen-units = 1
 debug = true
@@ -13,5 +18,4 @@ lto = true
 bluetooth-hci = { git = "https://github.com/Tiwalun/bluetooth-hci", branch = "add-data-len-phy-update-events" }
 
 # Patched version with updated cortex-m-rt
-stm32wb-pac = { git = "https://github.com/Tiwalun/stm32wb-pac"}
 stm32wb55 = { git = "https://github.com/Tiwalun/stm32wb55"}

@@ -9,7 +9,7 @@ use rtt_target::{rprintln, rtt_init_print};
 
 extern crate stm32wb_hal as hal;
 
-use core::{convert::TryFrom, time::Duration};
+use core::{convert::TryFrom, future::Pending, time::Duration};
 
 use cortex_m_rt::{entry, exception};
 use nb::block;
@@ -34,7 +34,7 @@ use ble::{perform_command, receive_event, setup_coprocessor, Characteristic, Rad
 use hap::{GattFormat, HapCharacteristic, HapProperties, HapService};
 use homekit_ble::{
     tlv::{Tlv, Value},
-    HapPdu, HapResponse, HapStatus, OpCode,
+    HapPdu, HapRequest, HapResponse, HapStatus, HapTlv, OpCode,
 };
 use stm32wb55::{
     event::{AttReadPermitRequest, AttributeHandle, GattAttributeModified, Stm32Wb5xEvent},
@@ -151,7 +151,7 @@ fn run() {
 
     rprintln!("Received packet: {:?}", reset_response);
 
-    let homekit_accessory = init_gap_and_gatt().expect("Failed to initialize GAP and GATT");
+    let mut homekit_accessory = init_gap_and_gatt().expect("Failed to initialize GAP and GATT");
 
     rprintln!("Succesfully initialized GAP and GATT");
 
@@ -190,11 +190,15 @@ fn run() {
 struct HapAccessory {
     protocol_service: ProtocolService,
 
-    pairing_service: PairingService,
+    pairing_service: PairingService<4>,
+
+    lightbulb_service: GenericService<2>,
+
+    accessory_service: GenericService<7>,
 }
 
 impl HapAccessory {
-    fn handle_event(&self, event: &Event<Stm32Wb5xEvent>) {
+    fn handle_event(&mut self, event: &Event<Stm32Wb5xEvent>) {
         if let Event::Vendor(stm_event) = event {
             match stm_event {
                 Stm32Wb5xEvent::GattAttributeModified(modified) => {
@@ -203,11 +207,19 @@ impl HapAccessory {
                     if self.protocol_service.contains_handle(modified.attr_handle) {
                         self.protocol_service
                             .handle_attribute_modified(modified)
-                            .expect("Failed to handle AttributeModified event");
+                            .expect("Protocol service failed to handle AttributeModified event");
                     } else if self.pairing_service.contains_handle(modified.attr_handle) {
                         self.pairing_service
                             .handle_attribute_modified(modified)
-                            .expect("Failed to handle AttributeModified event");
+                            .expect("Pairing service failed to handle AttributeModified event");
+                    } else if self.lightbulb_service.contains_handle(modified.attr_handle) {
+                        self.lightbulb_service
+                            .handle_attribute_modified(modified)
+                            .expect("Lightbulb service failed to handle AttributeModified event");
+                    } else if self.accessory_service.contains_handle(modified.attr_handle) {
+                        self.accessory_service
+                            .handle_attribute_modified(modified)
+                            .expect("Accessory service failed to handle AttributeModified event");
                     }
                 }
                 Stm32Wb5xEvent::AttReadPermitRequest(AttReadPermitRequest {
@@ -220,7 +232,9 @@ impl HapAccessory {
                         .expect("Failed to allow read");
                 }
                 // Ignore other events
-                _ => {}
+                _ => {
+                    rprintln!("Unhandled event for HAP Accessory");
+                }
             }
         }
     }
@@ -316,89 +330,128 @@ fn init_gap_and_gatt() -> Result<HapAccessory, ()> {
     rprintln!("Accessory information service");
 
     //cx.next_service = BleServices::AccessoryInformation;
-    let accessory_service = HapService::new(UUID_ACCESSORY_INFORMATION, 24, 1)?;
+    let accessory_hap_service = HapService::new(UUID_ACCESSORY_INFORMATION, 24, 1)?;
 
     // add the
 
-    let _information_identify_characteristic = HapCharacteristic::build(
-        &accessory_service,
+    let information_identify_characteristic = HapCharacteristic::build(
+        "information.identify",
+        &accessory_hap_service,
         2,
         UUID_ACCESSORY_INFORMATION_IDENTIFY,
         CharacteristicProperty::WRITE | CharacteristicProperty::READ,
         HapProperties::WRITE,
         GattFormat::Bool,
-        1,
+        64,
+        dummy_char_read,
+        dummy_char_write,
     )?;
 
     let information_manufacturer_characteristic = HapCharacteristic::build(
-        &accessory_service,
+        "information.manufacturer",
+        &accessory_hap_service,
         3,
         UUID_ACCESSORY_INFORMATION_MANUFACTURER,
         CharacteristicProperty::READ | CharacteristicProperty::WRITE,
         HapProperties::SECURE_READ,
         GattFormat::String,
         64,
+        dummy_char_read,
+        dummy_char_write,
     )?;
     //information_manufacturer_characteristic.set_value(b"Dominik Corp.\0")?;
 
     let information_model_characteristic = HapCharacteristic::build(
-        &accessory_service,
+        "information.model",
+        &accessory_hap_service,
         4,
         UUID_ACCESSORY_INFORMATION_MODEL,
         CharacteristicProperty::READ | CharacteristicProperty::WRITE,
         HapProperties::SECURE_READ,
         GattFormat::String,
-        10,
+        64,
+        dummy_char_read,
+        dummy_char_write,
     )?;
     //information_model_characteristic.set_value(b"M001\0")?;
 
     let information_name_characteristic = HapCharacteristic::build(
-        &accessory_service,
+        "information.name",
+        &accessory_hap_service,
         5,
         UUID_CHARACTERISTIC_NAME,
         CharacteristicProperty::READ | CharacteristicProperty::WRITE,
         HapProperties::SECURE_READ,
         GattFormat::String,
-        10,
+        64,
+        dummy_char_read,
+        dummy_char_write,
     )?;
     //information_name_characteristic.set_value(BT_NAME)?;
 
     let information_serial_number_characteristic = HapCharacteristic::build(
-        &accessory_service,
+        "information.serial_number",
+        &accessory_hap_service,
         6,
         UUID_ACCESSORY_INFORMATION_SERIAL_NUMBER,
         CharacteristicProperty::READ | CharacteristicProperty::WRITE,
         HapProperties::SECURE_READ,
         GattFormat::String,
-        15,
+        64,
+        dummy_char_read,
+        dummy_char_write,
     )?;
     //information_serial_number_characteristic.set_value(b"S12345\0")?;
 
     let information_firmware_revision_characteristic = HapCharacteristic::build(
-        &accessory_service,
+        "information.firmware",
+        &accessory_hap_service,
         7,
         UUID_ACCESSORY_INFORMATION_FIRMWARE_REVISION,
         CharacteristicProperty::READ | CharacteristicProperty::WRITE,
         HapProperties::SECURE_READ,
         GattFormat::String,
-        10,
+        64,
+        dummy_char_read,
+        dummy_char_write,
     )?;
     //information_firmware_revision_characteristic.set_value(b"1.0.0\0")?;
 
     let information_hardware_revision_characteristic = HapCharacteristic::build(
-        &accessory_service,
+        "information.hardware_revision",
+        &accessory_hap_service,
         8,
         UUID_ACCESSORY_INFORMATION_HARDWARE_REVISION,
         CharacteristicProperty::READ | CharacteristicProperty::WRITE,
         HapProperties::SECURE_READ,
         GattFormat::String,
-        10,
+        64,
+        dummy_char_read,
+        dummy_char_write,
     )?;
     //information_hardware_revision_characteristic.set_value(b"1.0.0\0")?;
 
+    let accessory_service = GenericService::new(
+        "accessory_service",
+        accessory_hap_service,
+        [
+            information_hardware_revision_characteristic,
+            information_firmware_revision_characteristic,
+            information_serial_number_characteristic,
+            information_name_characteristic,
+            information_model_characteristic,
+            information_identify_characteristic,
+            information_manufacturer_characteristic,
+        ],
+    );
+
     let protocol_service = ProtocolService::create_ble()?;
 
-    let pairing_service = PairingService::create_ble()?;
+    // Add Pairing service
+    rprintln!("Pairing service");
+    let pairing_service = HapService::new(UUID_PAIRING_SERVICE, 15, 0x20)?;
+
+    let pairing_service = PairingService::create_ble(pairing_service)?;
 
     // Create light bulb service
 
@@ -407,6 +460,7 @@ fn init_gap_and_gatt() -> Result<HapAccessory, ()> {
     // signature
 
     let lb_signature = HapCharacteristic::build(
+        "lightbulb.signature",
         &light_bulb_service,
         0x32,
         UUID_SERVICE_SIGNATURE,
@@ -414,9 +468,12 @@ fn init_gap_and_gatt() -> Result<HapAccessory, ()> {
         HapProperties::SECURE_READ,
         GattFormat::Data,
         64,
+        dummy_char_read,
+        dummy_char_write,
     )?;
 
     let lb_name = HapCharacteristic::build(
+        "lightbulb.name",
         &light_bulb_service,
         0x31,
         UUID_CHARACTERISTIC_NAME,
@@ -424,9 +481,12 @@ fn init_gap_and_gatt() -> Result<HapAccessory, ()> {
         HapProperties::SECURE_READ,
         GattFormat::String,
         64,
+        dummy_char_read,
+        dummy_char_write,
     )?;
 
     let lb_on = HapCharacteristic::build(
+        "lightbulb.on",
         &light_bulb_service,
         0x33,
         UUID_CHARACTERISTIC_ON,
@@ -436,78 +496,300 @@ fn init_gap_and_gatt() -> Result<HapAccessory, ()> {
         HapProperties::SECURE_READ | HapProperties::SECURE_WRITE | HapProperties::NOTIFY_CONNECTED,
         GattFormat::Bool,
         64,
+        dummy_char_read,
+        dummy_char_write,
     )?;
+
+    let mut light_bulb = GenericService::new("lightbulb", light_bulb_service, [lb_name, lb_on]);
+
+    light_bulb.add_signature_characteristic(lb_signature);
 
     Ok(HapAccessory {
         protocol_service,
         pairing_service,
+        lightbulb_service: light_bulb,
+        accessory_service: accessory_service,
     })
 }
 
-struct PairingService {
+struct GenericService<const N: usize> {
+    name: &'static str,
+
     service: HapService,
 
-    setup: HapCharacteristic,
-    verify: HapCharacteristic,
-    features: HapCharacteristic,
-    pairings: HapCharacteristic,
+    signature_characteristic: Option<HapCharacteristic>,
+
+    characteristics: [HapCharacteristic; N],
+}
+
+impl<const N: usize> GenericService<N> {
+    fn new(
+        name: &'static str,
+        service: HapService,
+        characteristics: [HapCharacteristic; N],
+    ) -> Self {
+        // Add Pairing service
+
+        Self {
+            name,
+            service,
+            characteristics,
+            signature_characteristic: None,
+        }
+    }
+
+    fn add_signature_characteristic(&mut self, signature_characteristic: HapCharacteristic) {
+        self.signature_characteristic = Some(signature_characteristic)
+    }
+
+    /// Check if a BLE attribute handle is part of this service
+    fn contains_handle(&self, handle: AttributeHandle) -> bool {
+        self.service.contains_handle(handle)
+    }
+
+    fn get_characteristic(&self, instance_id: u16) -> Option<&HapCharacteristic> {
+        self.characteristics
+            .iter()
+            .find(|c| c.instance_id == instance_id)
+    }
+
+    fn get_characteristic_mut(&mut self, instance_id: u16) -> Option<&mut HapCharacteristic> {
+        self.characteristics
+            .iter_mut()
+            .find(|c| c.instance_id == instance_id)
+    }
+
+    /// Handle a BLE event for this service
+    fn handle_attribute_modified(&mut self, modified: &GattAttributeModified) -> Result<(), ()> {
+        // Try to parse a HAP PDU
+        if let Ok(HapPdu::Request(pdu)) = HapPdu::parse(modified.data()) {
+            rprintln!("PDU: {:#x?}", pdu);
+
+            match pdu.op_code {
+                OpCode::CharacteristicSignatureRead => {
+                    // Signature for Protocol Service Signature Characteristic
+                    let characteristic = self.get_characteristic(pdu.char_id).ok_or(())?;
+
+                    rprintln!("Signature Read: {}", characteristic.debug_name);
+
+                    characteristic_signature_read(
+                        pdu.tid,
+                        characteristic,
+                        &self.service.uuid,
+                        self.service.instance_id,
+                    )?;
+                }
+                OpCode::CharacteristicRead => {
+                    let characteristic = self.get_characteristic_mut(pdu.char_id).ok_or(())?;
+
+                    rprintln!("Characteristic Read: {}", characteristic.debug_name);
+
+                    characteristic.handle_read(&pdu)?;
+                }
+                OpCode::CharacteristicWrite => {
+                    let characteristic = self.get_characteristic_mut(pdu.char_id).ok_or(())?;
+
+                    rprintln!("Characteristic Write: {}", characteristic.debug_name);
+
+                    characteristic.handle_write(pdu.tid, pdu.data)?;
+                }
+
+                // Ignore other op codes
+                _ => {}
+            }
+        } else {
+            rprintln!("Failed to parse HAP PDU.");
+        }
+
+        Ok(())
+    }
+}
+
+struct PairingService<const N: usize> {
+    service: HapService,
+
+    characteristics: [HapCharacteristic; N],
 
     pairing_state: PairingSetupState,
 }
 
-impl PairingService {
-    fn create_ble() -> Result<Self, ()> {
-        // Add Pairing service
-        rprintln!("Pairing service");
-        let pairing_service = HapService::new(UUID_PAIRING_SERVICE, 15, 0x20)?;
-
+impl PairingService<4> {
+    fn create_ble(service: HapService) -> Result<Self, ()> {
         // TODO: not hardcoded value here
 
         let pair_setup = HapCharacteristic::build(
-            &pairing_service,
+            "pair.setup",
+            &service,
             0x22,
             UUID_PAIRING_SETUP,
             CharacteristicProperty::READ | CharacteristicProperty::WRITE,
             HapProperties::READ | HapProperties::WRITE,
             GattFormat::Data,
             512,
+            dummy_char_read,
+            |characteristic, tid, data| {
+                // Write to the setup characteristic
+
+                if let Some(data) = data {
+                    let mut write_with_response = false;
+
+                    let mut body: Option<&[u8]> = None;
+
+                    for tlv in Tlv::parse(data) {
+                        // The type of these TLV should be one of the type specified in
+                        // the interface specification in Table 7-10
+                        match tlv.tlv_type {
+                            // HAP-Param-Value
+                            0x1 => match tlv.value {
+                                Value::Bytes(value) => {
+                                    body = Some(value);
+                                }
+                                _ => rprintln!("Unexpected TLV body!"),
+                            },
+                            // HAP-Param-Return-Response
+                            0x9 => {
+                                rprintln!("Write with response!");
+                                write_with_response = true;
+                            }
+                            _ => {
+                                rprintln!("Unknown TLV in Characteristic-Write");
+                            }
+                        }
+                    }
+
+                    if let Some(body) = body {
+                        let mut state = None;
+                        let mut method = None;
+
+                        for tlv in Tlv::parse(body) {
+                            match tlv.tlv_type {
+                                // PairingMethod
+                                0x0 => {
+                                    method = Some(tlv);
+                                }
+                                0x6 => {
+                                    state = Some(tlv);
+                                }
+                                // Ignore other TLVs,
+                                x => {
+                                    rprintln!("Unhandled TLV: {}", x);
+                                }
+                            }
+                        }
+
+                        if state.is_some() && method.is_some() {
+                            let method = PairingMethod::try_from(method.unwrap())
+                                .expect("Error parsing pairing method");
+
+                            rprintln!("Pairing State: {:?}", state.unwrap().value);
+                            rprintln!("Pairing Method: {:?}", method);
+
+                            let mut tid_data = [0u8; 20];
+
+                            // kTLVType_State: 2
+                            let tlv = Tlv::new(0x06, 2u8);
+
+                            let mut offset = tlv.write_into(&mut tid_data);
+
+                            // Add error: max auth attempts
+                            let tlv = Tlv::new(0x07, 5u8);
+
+                            offset += tlv.write_into(&mut tid_data[offset..]);
+
+                            let complete_tlv = Tlv::new(0x01, &tid_data[..offset]);
+
+                            let mut complete_tlv_data = [0u8; 20];
+
+                            let len = complete_tlv.write_into(&mut complete_tlv_data);
+
+                            let response = HapResponse::new(
+                                tid,
+                                HapStatus::Success,
+                                &complete_tlv_data[..len],
+                            );
+
+                            // we now have to write the property with the response
+
+                            let mut resp_buff = [0u8; 50];
+
+                            response
+                                .write_into(&mut resp_buff)
+                                .expect("Failed to HAP Response");
+
+                            rprintln!("Response: {:?}", response);
+
+                            characteristic.set_value(&resp_buff[..response.size()])?;
+
+                            // TODO: Handle SRP
+                        }
+                    }
+                }
+                Ok(())
+            },
         )?;
 
         let pair_verify = HapCharacteristic::build(
-            &pairing_service,
+            "pair.verify",
+            &service,
             0x23,
             UUID_PAIRING_VERIFY,
             CharacteristicProperty::READ | CharacteristicProperty::WRITE,
             HapProperties::READ | HapProperties::WRITE,
             GattFormat::Data,
             512,
+            dummy_char_read,
+            dummy_char_write,
         )?;
 
         let pairing_features = HapCharacteristic::build(
-            &pairing_service,
+            "pairing.features",
+            &service,
             0x24,
             UUID_PAIRING_FEATURES,
             CharacteristicProperty::READ | CharacteristicProperty::WRITE,
             HapProperties::READ, // | HapProperties::WRITE,
             GattFormat::Uint8,
             512,
+            |characteristic, request| {
+                // Read of the Feature Characteristic
+
+                // response is 0 (this means no)
+                let mut response_data = [0u8; 3];
+
+                let tlv = Tlv::new(HapTlv::Value, 0u8);
+
+                tlv.write_into(&mut response_data);
+
+                let response = HapResponse::new(request.tid, HapStatus::Success, &response_data);
+
+                // we now have to write the property with the response
+
+                let mut resp_buff = [0u8; 50];
+
+                response
+                    .write_into(&mut resp_buff)
+                    .expect("Failed to HAP Response");
+
+                characteristic.set_value(&resp_buff[..response.size()])
+            },
+            dummy_char_write,
         )?;
         let pairing_pairings = HapCharacteristic::build(
-            &pairing_service,
+            "pairing.pairings",
+            &service,
             0x25,
             UUID_PAIRING_PAIRINGS,
             CharacteristicProperty::READ | CharacteristicProperty::WRITE,
             HapProperties::SECURE_READ | HapProperties::SECURE_WRITE,
             GattFormat::Data,
             512,
+            dummy_char_read,
+            dummy_char_write,
         )?;
 
         Ok(Self {
-            service: pairing_service,
-            setup: pair_setup,
-            verify: pair_verify,
-            features: pairing_features,
-            pairings: pairing_pairings,
+            service,
+            characteristics: [pair_setup, pair_verify, pairing_features, pairing_pairings],
             pairing_state: PairingSetupState::M1,
         })
     }
@@ -518,26 +800,19 @@ impl PairingService {
     }
 
     fn get_characteristic(&self, instance_id: u16) -> Option<&HapCharacteristic> {
-        if instance_id == self.setup.instance_id {
-            Some(&self.setup)
-        } else if instance_id == self.verify.instance_id {
-            Some(&self.verify)
-        } else if instance_id == self.features.instance_id {
-            Some(&self.features)
-        } else if instance_id == self.pairings.instance_id {
-            Some(&self.pairings)
-        } else {
-            // Unsupported characteristic ID
-            rprintln!(
-                "Characteristic with ID {} is not part of this service.",
-                instance_id
-            );
-            None
-        }
+        self.characteristics
+            .iter()
+            .find(|c| c.instance_id == instance_id)
+    }
+
+    fn get_characteristic_mut(&mut self, instance_id: u16) -> Option<&mut HapCharacteristic> {
+        self.characteristics
+            .iter_mut()
+            .find(|c| c.instance_id == instance_id)
     }
 
     /// Handle a BLE event for this service
-    fn handle_attribute_modified(&self, modified: &GattAttributeModified) -> Result<(), ()> {
+    fn handle_attribute_modified(&mut self, modified: &GattAttributeModified) -> Result<(), ()> {
         // Try to parse a HAP PDU
         if let Ok(HapPdu::Request(pdu)) = HapPdu::parse(modified.data()) {
             rprintln!("PDU: {:#x?}", pdu);
@@ -547,100 +822,28 @@ impl PairingService {
                     // Signature for Protocol Service Signature Characteristic
                     let characteristic = self.get_characteristic(pdu.char_id).ok_or(())?;
 
-                    characteristic_signature_read(pdu.tid, characteristic, &self.service)?;
+                    rprintln!("Signature Read: {}", characteristic.debug_name);
+
+                    characteristic_signature_read(
+                        pdu.tid,
+                        characteristic,
+                        &self.service.uuid,
+                        self.service.instance_id,
+                    )?;
                 }
                 OpCode::CharacteristicRead => {
-                    if pdu.char_id == self.features.instance_id {
-                        // Read of the Feature Characteristic
+                    let characteristic = self.get_characteristic_mut(pdu.char_id).ok_or(())?;
 
-                        // response is 0 (this means no)
-                        let mut response_data = [0u8; 3];
+                    rprintln!("Characteristic Read: {}", characteristic.debug_name);
 
-                        let tlv = Tlv::new(0x01, 0u8);
-
-                        tlv.write_into(&mut response_data);
-
-                        let response =
-                            HapResponse::new(pdu.tid, HapStatus::Success, &response_data);
-
-                        // we now have to write the property with the response
-
-                        let mut resp_buff = [0u8; 50];
-
-                        response
-                            .write_into(&mut resp_buff)
-                            .expect("Failed to HAP Response");
-
-                        // This meas we have to send a xxx event
-                        self.features
-                            .set_value(&resp_buff[..response.size()])
-                            .expect("Failed to set value for ServiceSignatureRead");
-                    } else {
-                        rprintln!(
-                            "Characteristic ID mismatch: self.id={}, pdu.char_id={}",
-                            self.features.instance_id,
-                            pdu.char_id
-                        );
-                    }
+                    characteristic.handle_read(&pdu)?;
                 }
                 OpCode::CharacteristicWrite => {
-                    if pdu.char_id == self.setup.instance_id {
-                        // Write to the setup characteristic
+                    let characteristic = self.get_characteristic_mut(pdu.char_id).ok_or(())?;
 
-                        if let Some(data) = pdu.data {
-                            let mut write_with_response = false;
+                    rprintln!("Characteristic Write: {}", characteristic.debug_name);
 
-                            let mut body: Option<&[u8]> = None;
-
-                            for tlv in Tlv::parse(data) {
-                                // The type of these TLV should be one of the type specified in
-                                // the interface specification in Table 7-10
-                                match tlv.tlv_type {
-                                    // HAP-Param-Value
-                                    0x1 => match tlv.value {
-                                        Value::Bytes(value) => {
-                                            body = Some(value);
-                                        }
-                                        _ => rprintln!("Unexpected TLV body!"),
-                                    },
-                                    // HAP-Param-Return-Response
-                                    0x9 => {
-                                        write_with_response = true;
-                                    }
-                                    _ => {
-                                        rprintln!("Unknown TLV in Characteristic-Write");
-                                    }
-                                }
-                            }
-
-                            if let Some(body) = body {
-                                let mut state = None;
-                                let mut method = None;
-
-                                for tlv in Tlv::parse(body) {
-                                    match tlv.tlv_type {
-                                        // PairingMethod
-                                        0x0 => {
-                                            method = Some(tlv);
-                                        }
-                                        0x6 => {
-                                            state = Some(tlv);
-                                        }
-                                        // Ignore other TLVs,
-                                        _ => (),
-                                    }
-                                }
-
-                                if state.is_some() && method.is_some() {
-                                    let method = PairingMethod::try_from(method.unwrap())
-                                        .expect("Error parsing pairing method");
-
-                                    rprintln!("Pairing State: {:?}", state.unwrap().value);
-                                    rprintln!("Pairing Method: {:?}", method);
-                                }
-                            }
-                        }
-                    }
+                    characteristic.handle_write(pdu.tid, pdu.data)?;
                 }
 
                 // Ignore other op codes
@@ -728,9 +931,9 @@ fn handle_setup() {
 struct ProtocolService {
     service: HapService,
 
-    version: HapCharacteristic,
+    signature_iid: Option<u16>,
 
-    signature: HapCharacteristic,
+    characteristics: [HapCharacteristic; 2],
 }
 
 impl ProtocolService {
@@ -741,38 +944,55 @@ impl ProtocolService {
 
         rprintln!("Protocol information service");
 
-        let protocol_information_service = HapService::new(UUID_PROTOCOL_INFORMATION, 9, 0x10)?;
+        let protocol_information_service = HapService::new(UUID_PROTOCOL_INFORMATION, 9, 0x9)?;
 
         let protocol_service_signature = HapCharacteristic::build(
+            "protocol.signature",
             &protocol_information_service,
-            0x11,
+            0xA,
             UUID_SERVICE_SIGNATURE,
             CharacteristicProperty::READ | CharacteristicProperty::WRITE,
             HapProperties::SECURE_READ,
             GattFormat::Data,
             100,
+            dummy_char_read,
+            dummy_char_write,
         )?;
 
         // Indicate that the protocol service support configuration (7.4.3, p. 121, HAP Specification)
         //service_signature_characteristic.set_value(&[0x04, 0x00])?;
 
         let protocol_version_characteristic = HapCharacteristic::build(
+            "protocol.version",
             &protocol_information_service,
-            0x12,
+            0xB,
             UUID_VERSION_CHARACTERISTIC,
             CharacteristicProperty::READ | CharacteristicProperty::WRITE,
             HapProperties::SECURE_READ,
             GattFormat::String,
             100,
+            dummy_char_read,
+            dummy_char_write,
         )?;
 
         //protocol_version_characteristic.set_value(b"2.2.0\0")?;
 
         Ok(Self {
             service: protocol_information_service,
-            version: protocol_version_characteristic,
-            signature: protocol_service_signature,
+            signature_iid: Some(0xA),
+            characteristics: [protocol_version_characteristic, protocol_service_signature],
         })
+    }
+    fn get_characteristic(&self, instance_id: u16) -> Option<&HapCharacteristic> {
+        self.characteristics
+            .iter()
+            .find(|c| c.instance_id == instance_id)
+    }
+
+    fn get_characteristic_mut(&mut self, instance_id: u16) -> Option<&mut HapCharacteristic> {
+        self.characteristics
+            .iter_mut()
+            .find(|c| c.instance_id == instance_id)
     }
 
     /// Check if a BLE attribute handle is part of this service
@@ -788,61 +1008,68 @@ impl ProtocolService {
 
             match pdu.op_code {
                 OpCode::ServiceSignatureRead => {
-                    // Handle read of Protocol Service Signature
-                    if pdu.char_id == self.service.instance_id {
-                        // We don't link to any services, so the LinkedSvc TLV is not used
-
-                        // The properties of this service are that it support configuration
-                        // -> 0x0004
-
-                        let svc_properties = Tlv::new(0xf, 0x04u16);
-                        let linked_svc = Tlv::new(0x10, &[][..]);
-
-                        let mut response_data = [0u8; 6];
-                        let mut offset = 0;
-
-                        offset += svc_properties.write_into(&mut response_data);
-
-                        offset += linked_svc.write_into(&mut response_data[offset..]);
-
-                        let response =
-                            HapResponse::new(pdu.tid, HapStatus::Success, &response_data[offset..]);
-
-                        // we now have to write the property with the response
-
-                        let mut resp_buff = [0u8; 50];
-
-                        response
-                            .write_into(&mut resp_buff)
-                            .expect("Failed to HAP Response");
-
-                        // This meas we have to send a xxx event
-                        self.signature
-                            .set_value(&resp_buff[..response.size()])
-                            .expect("Failed to set value for ServiceSignatureRead");
-                    } else {
-                        // Not sure
+                    if pdu.char_id != self.service.instance_id {
+                        return Err(());
                     }
+
+                    let service_char = self
+                        .get_characteristic(self.signature_iid.unwrap())
+                        .ok_or(())?;
+
+                    if service_char.uuid != UUID_SERVICE_SIGNATURE {
+                        return Err(());
+                    }
+
+                    // Handle read of Protocol Service Signature
+                    // We don't link to any services, so the LinkedSvc TLV is not used
+
+                    // The properties of this service are that it support configuration
+                    // -> 0x0004
+
+                    let svc_properties = Tlv::new(HapTlv::HapServiceProperties, 0x04u16);
+                    let linked_svc = Tlv::new(HapTlv::HapLinkedServices, &[][..]);
+
+                    let mut response_data = [0u8; 6];
+                    let mut offset = 0;
+
+                    offset += svc_properties.write_into(&mut response_data);
+
+                    offset += linked_svc.write_into(&mut response_data[offset..]);
+
+                    let response =
+                        HapResponse::new(pdu.tid, HapStatus::Success, &response_data[offset..]);
+
+                    // we now have to write the property with the response
+
+                    let mut resp_buff = [0u8; 50];
+
+                    response
+                        .write_into(&mut resp_buff)
+                        .expect("Failed to HAP Response");
+
+                    // This meas we have to send a xxx event
+
+                    service_char
+                        .set_value(&resp_buff[..response.size()])
+                        .expect("Failed to set value for ServiceSignatureRead");
                 }
                 OpCode::CharacteristicSignatureRead => {
                     // Signature for Protocol Service Signature Characteristic
-                    let characteristic = if pdu.char_id == self.signature.instance_id {
-                        &self.signature
-                    } else if pdu.char_id == self.version.instance_id {
-                        &self.version
-                    } else {
-                        // Unsupported characteristic ID
-                        rprintln!(
-                            "Characteristic with ID {} is not part of this service.",
-                            pdu.char_id
-                        );
-                        return Err(());
-                    };
+                    let characteristic = self.get_characteristic(pdu.char_id).ok_or(())?;
 
-                    characteristic_signature_read(pdu.tid, characteristic, &self.service)?;
+                    rprintln!("Signature Read: {}", characteristic.debug_name);
+
+                    characteristic_signature_read(
+                        pdu.tid,
+                        characteristic,
+                        &self.service.uuid,
+                        self.service.instance_id,
+                    )?;
                 }
                 // Ignore other op codes
-                _ => {}
+                op_code => {
+                    rprintln!("Unexpected OP code: {:?}", op_code);
+                }
             }
         } else {
             rprintln!("Failed to parse HAP PDU.");
@@ -855,11 +1082,12 @@ impl ProtocolService {
 fn characteristic_signature_read(
     tid: u8,
     characteristic: &HapCharacteristic,
-    service: &HapService,
+    service_uuid: &[u8],
+    service_instance_id: u16,
 ) -> Result<(), ()> {
     let mut response_data = [0u8; 53];
-    let characteristic_uuid = Tlv::new(0x04, &characteristic.uuid[..]);
-    let service_uuid = Tlv::new(0x06, &service.uuid[..]);
+    let characteristic_uuid = Tlv::new(HapTlv::ChrType, &characteristic.uuid[..]);
+    let service_uuid = Tlv::new(HapTlv::SvcType, service_uuid);
 
     let mut offset = 0;
 
@@ -867,14 +1095,14 @@ fn characteristic_signature_read(
     offset += characteristic_uuid.write_into(&mut response_data);
 
     // service id
-    offset += Tlv::new(0x07, service.instance_id).write_into(&mut response_data[offset..]);
+    offset += Tlv::new(HapTlv::SvcId, service_instance_id).write_into(&mut response_data[offset..]);
 
     // service type
     offset += service_uuid.write_into(&mut response_data[offset..]);
 
     // properties
-    offset +=
-        Tlv::new(0x0a, characteristic.properties.bits()).write_into(&mut response_data[offset..]);
+    offset += Tlv::new(HapTlv::HapChrProperties, characteristic.properties.bits())
+        .write_into(&mut response_data[offset..]);
 
     let mut gatt_format = [0u8; 7];
 
@@ -887,7 +1115,8 @@ fn characteristic_signature_read(
     gatt_format[4] = 1;
 
     // GATT Format
-    offset += Tlv::new(0x0C, &gatt_format[..]).write_into(&mut response_data[offset..]);
+    offset +=
+        Tlv::new(HapTlv::GattFormat, &gatt_format[..]).write_into(&mut response_data[offset..]);
 
     assert_eq!(
         offset,
@@ -999,4 +1228,16 @@ fn init_homekit() -> Result<(), ()> {
     })?;
 
     Ok(())
+}
+
+fn dummy_char_read(characteristic: &mut HapCharacteristic, request: &HapRequest) -> Result<(), ()> {
+    todo!()
+}
+
+fn dummy_char_write(
+    characteristic: &mut HapCharacteristic,
+    tid: u8,
+    data: Option<&[u8]>,
+) -> Result<(), ()> {
+    todo!()
 }

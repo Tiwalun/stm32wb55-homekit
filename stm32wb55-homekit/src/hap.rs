@@ -4,6 +4,7 @@ use crate::{
 };
 /// HAP Characteristic
 use bitflags::bitflags;
+use homekit_ble::HapRequest;
 use rtt_target::rprintln;
 use stm32wb55::{
     event::AttributeHandle,
@@ -60,7 +61,11 @@ impl HapService {
     }
 }
 
+type CharWriteHandler = fn(&mut HapCharacteristic, tid: u8, data: Option<&[u8]>) -> Result<(), ()>;
+
 pub struct HapCharacteristic {
+    pub debug_name: &'static str,
+
     characteristic: Characteristic,
     characteristic_id: DescriptorHandle,
 
@@ -75,6 +80,20 @@ pub struct HapCharacteristic {
     pub format: GattFormat,
 
     pub unit: Unit,
+
+    read_handler: fn(&mut Self, request: &HapRequest) -> Result<(), ()>,
+
+    write_handler: CharWriteHandler,
+}
+
+impl HapCharacteristic {
+    pub fn handle_read(&mut self, request: &HapRequest) -> Result<(), ()> {
+        (self.read_handler)(self, request)
+    }
+
+    pub fn handle_write(&mut self, tid: u8, data: Option<&[u8]>) -> Result<(), ()> {
+        (self.write_handler)(self, tid, data)
+    }
 }
 
 bitflags! {
@@ -127,6 +146,7 @@ pub enum GattFormat {
 
 impl HapCharacteristic {
     pub fn build(
+        name: &'static str,
         service: &HapService,
         instance_id: u16,
         uuid: [u8; 16],
@@ -134,6 +154,8 @@ impl HapCharacteristic {
         hap_properties: HapProperties,
         format: GattFormat,
         characteristic_len: usize,
+        read_handler: fn(&mut Self, request: &HapRequest) -> Result<(), ()>,
+        write_handler: CharWriteHandler,
     ) -> Result<Self, ()> {
         // let (is_variable, characteristic_len) = match characteristic_len {
         //     CharacteristicLength::Fixed(len) => (false, len),
@@ -171,6 +193,7 @@ impl HapCharacteristic {
         // );
 
         Ok(HapCharacteristic {
+            debug_name: name,
             characteristic,
             uuid,
             instance_id,
@@ -178,6 +201,8 @@ impl HapCharacteristic {
             characteristic_id: descriptor_handle,
             format,
             unit: Unit::default(),
+            read_handler,
+            write_handler,
         })
     }
 
