@@ -3,5 +3,10 @@
     "lldb.showDisassembly": "auto",
     "lldb.dereferencePointers": true,
     "Cargo Flash.chip": "stm32wb55cc",
-    "Cargo Flash.binary": "/home/dominik/Coding/cargo-flash/target/release/cargo-flash"
+    "Cargo Flash.binary": "/home/dominik/Coding/cargo-flash/target/release/cargo-flash",
+    "rust-analyzer.cargo.unsetTest": [
+        "core",
+        "homekit-ble",
+        "stm32wb55-homekit"
+    ]
 }

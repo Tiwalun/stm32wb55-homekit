@@ -2,7 +2,7 @@
 name = "stm32wb55-homekit"
 version = "0.1.0"
 authors = ["Dominik Boehi <dominik.boehi@gmail.com>"]
-edition = "2018"
+edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/tiwalun/stm32wb55-homekit"
 
@@ -24,7 +24,7 @@ bbqueue = "0.4.8"
 bitflags = "1.2.1"
 
 
-cortex-m = "0.6.2"
+cortex-m = "0.7.0"
 stm32wb-pac = "0.2"
 as-slice = "0.1"
 heapless = "0.5.3"

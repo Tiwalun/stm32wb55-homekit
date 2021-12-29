@@ -24,7 +24,7 @@ serial = "000801020506"
 enabled = false
 
 [log.rtt]
-enabled = "true"
+enabled = true
 timeout = 20000
 log_enabled = true
 
