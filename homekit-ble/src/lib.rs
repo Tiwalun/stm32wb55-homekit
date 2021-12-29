@@ -1,6 +1,6 @@
 // This crate is `no_std`, only for
 // tests not.
-//#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_std)]
 
 use core::convert::{TryFrom, TryInto};
 
