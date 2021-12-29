@@ -192,7 +192,7 @@ pub enum HapStatus {
 pub struct HapResponse<'a> {
     tid: u8,
 
-    status: HapStatus,
+    pub status: HapStatus,
 
     data: &'a [u8],
 }

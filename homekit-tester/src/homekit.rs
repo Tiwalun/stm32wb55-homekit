@@ -1,6 +1,22 @@
 use anyhow::{bail, ensure};
-use blez::Uuid;
+use bitflags::bitflags;
+use bluer::Uuid;
 use std::convert::TryInto;
+
+bitflags! {
+    pub struct CharProbs: u16 {
+        const READ = 0x0001;
+        const WRITE = 0x0002;
+        const ADDITIONAL_AUTHORIZATION = 0x0004;
+        const TIMED_WRITE = 0x0008;
+        const SECURE_READ = 0x0010;
+        const SECURE_WRITE = 0x0020;
+        const HIDDEN = 0x40;
+        const EVENTS_CONNECTED = 0x80;
+        const EVENTS_DISCONNECTED = 0x100;
+        const BROADCAST = 0x200;
+    }
+}
 
 #[derive(Debug)]
 pub enum HomekitServiceUuid {
@@ -42,6 +58,7 @@ pub enum HomekitCharacteristicUuid {
     Model,
     Manufacturer,
     SerialNumber,
+    On,
     Unknown(Uuid),
 }
 
@@ -61,6 +78,7 @@ impl HomekitCharacteristicUuid {
             uuid::HARDWARE_REVISION => HomekitCharacteristicUuid::HardwareRevision,
             uuid::MODEL => HomekitCharacteristicUuid::Model,
             uuid::SERVICE_SIGNATURE => HomekitCharacteristicUuid::ServiceSignature,
+            uuid::ON => HomekitCharacteristicUuid::On,
             uuid => HomekitCharacteristicUuid::Unknown(uuid),
         }
     }
@@ -159,7 +177,7 @@ impl HapRequest {
 pub struct HapResponse {
     control_field: u8,
     tid: u8,
-    status: HapStatus,
+    pub status: HapStatus,
 
     pub data: Option<Vec<u8>>,
 }
@@ -184,7 +202,7 @@ impl HapResponse {
                 data: None,
             }),
             4 => {
-                bail!("Mistake in data length: {}")
+                bail!("Mistake in data length: Got 4 but should be 3 or larger than 5")
             }
             len => {
                 let encoded_len = u16::from_le_bytes(
@@ -207,7 +225,7 @@ impl HapResponse {
 }
 
 pub mod uuid {
-    use blez::Uuid;
+    use bluer::Uuid;
 
     pub const SERVICE_INSTANCE_ID: Uuid = Uuid::from_bytes([
         0xE6, 0x04, 0xE9, 0x5D, 0xA7, 0x59, 0x48, 0x17, 0x87, 0xD3, 0xAA, 0x00, 0x50, 0x83, 0xA0,
@@ -263,6 +281,9 @@ pub mod uuid {
 
     /// public.hap.characteristic.model
     pub const MODEL: Uuid = apple_uuid(0x21);
+
+    /// public.hap.characteristic.on
+    pub const ON: Uuid = apple_uuid(0x25);
 
     /// public.hap.characteristic.serial_number
     pub const SERIAL_NUMBER: Uuid = apple_uuid(0x30);

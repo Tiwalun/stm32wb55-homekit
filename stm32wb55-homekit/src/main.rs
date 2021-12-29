@@ -162,7 +162,7 @@ fn run() {
     loop {
         let response = block!(receive_event());
 
-        rprintln!("Received event: {:x?}", response);
+        //rprintln!("Received event: {:x?}", response);
 
         if let Ok(Packet::Event(event)) = response {
             match event {
@@ -220,6 +220,8 @@ impl HapAccessory {
                         self.accessory_service
                             .handle_attribute_modified(modified)
                             .expect("Accessory service failed to handle AttributeModified event");
+                    } else {
+                        rprintln!("No service configured for handle!");
                     }
                 }
                 Stm32Wb5xEvent::AttReadPermitRequest(AttReadPermitRequest {
@@ -232,8 +234,8 @@ impl HapAccessory {
                         .expect("Failed to allow read");
                 }
                 // Ignore other events
-                _ => {
-                    rprintln!("Unhandled event for HAP Accessory");
+                ev => {
+                    rprintln!("Unhandled event for HAP Accessory: {:?}", ev);
                 }
             }
         }
@@ -595,7 +597,7 @@ impl<const N: usize> GenericService<N> {
                 }
 
                 // Ignore other op codes
-                _ => {}
+                code => rprintln!("Unknown OpCode: {:?}", code),
             }
         } else {
             rprintln!("Failed to parse HAP PDU.");

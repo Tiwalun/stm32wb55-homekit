@@ -1,14 +1,14 @@
 use std::convert::TryInto;
 
 use anyhow::Context;
-use blez::{gatt::remote::CharacteristicWriteRequest, Adapter, Address};
+use bluer::{gatt::remote::CharacteristicWriteRequest, Adapter, Address};
 use futures::StreamExt;
 use homekit::HomekitCharacteristicUuid;
 use scroll::Pread;
 
 use homekit_ble::tlv::Tlv;
 
-use crate::homekit::{HapRequest, HapResponse, HomekitServiceUuid};
+use crate::homekit::{CharProbs, HapRequest, HapResponse, HomekitServiceUuid};
 
 mod homekit;
 
@@ -19,12 +19,12 @@ async fn show_device_info(adapter: &Adapter, addr: Address) -> Result<(), anyhow
         .device(addr)
         .with_context(|| format!("Failed to open device with address {}", addr))?;
 
-    println!("Address: {}", device.address());
-    println!("Name:    {:?}", device.name().await?);
+    println!(" - Address: {}", device.address());
+    println!(" - Name:    {:?}", device.name().await?);
 
     if let Some(data) = device.manufacturer_data().await? {
         if let Some(homekit_data) = data.get(&APPLE_COID) {
-            println!("Apple manufacturer data: {:02x?}", homekit_data);
+            println!(" - Apple manufacturer data: {:02x?}", homekit_data);
 
             if is_homekit_device(homekit_data) {
                 let mut homekit_device = HomekitDevice::new(device).await?;
@@ -38,6 +38,8 @@ async fn show_device_info(adapter: &Adapter, addr: Address) -> Result<(), anyhow
         println!(" -- no manufacturer data");
     }
 
+    println!(" ----");
+
     Ok(())
 }
 
@@ -48,7 +50,7 @@ fn is_homekit_device(data: &[u8]) -> bool {
 
     if type_ != 0x06 {
         println!(
-            "Unexpected Manufacturer Data, 'type' must be 0x06, but is {:#04x}",
+            " - Unexpected Manufacturer Data, 'type' must be 0x06, but is {:#04x}",
             type_
         );
         return false;
@@ -114,7 +116,7 @@ fn is_homekit_device(data: &[u8]) -> bool {
 }
 
 struct HomekitDevice {
-    device: blez::Device,
+    device: bluer::Device,
 
     services: Vec<HomekitService>,
 
@@ -122,7 +124,7 @@ struct HomekitDevice {
 }
 
 struct HomekitService {
-    gatt_service: blez::gatt::remote::Service,
+    gatt_service: bluer::gatt::remote::Service,
 
     uuid: HomekitServiceUuid,
 
@@ -132,7 +134,7 @@ struct HomekitService {
 }
 
 struct HomekitCharacteristic {
-    gatt_characteristic: blez::gatt::remote::Characteristic,
+    gatt_characteristic: bluer::gatt::remote::Characteristic,
 
     uuid: HomekitCharacteristicUuid,
 
@@ -141,8 +143,8 @@ struct HomekitCharacteristic {
 
 impl HomekitCharacteristic {
     async fn new(
-        characteristic: blez::gatt::remote::Characteristic,
-        uuid: blez::Uuid,
+        characteristic: bluer::gatt::remote::Characteristic,
+        uuid: bluer::Uuid,
     ) -> Result<Self, anyhow::Error> {
         let descriptors = characteristic.descriptors().await?;
 
@@ -173,7 +175,7 @@ impl HomekitCharacteristic {
 }
 
 impl HomekitDevice {
-    async fn new(device: blez::Device) -> Result<Self, anyhow::Error> {
+    async fn new(device: bluer::Device) -> Result<Self, anyhow::Error> {
         if !device.is_connected().await? {
             device
                 .connect()
@@ -223,24 +225,29 @@ impl HomekitDevice {
             }
         }
 
-        Ok(Self { device, services, tid: 1 })
+        Ok(Self {
+            device,
+            services,
+            tid: 1,
+        })
     }
 
     async fn debug_print(&mut self) -> Result<(), anyhow::Error> {
         for service in &self.services {
             println!(
-                "  \\-- {:?}  - Instance {}",
+                "  \\-- Service {:?}  - Instance {}",
                 service.uuid, service.instance_id
             );
 
             for characteristic in &service.characteristics {
                 println!(
-                    "   \\--  {:?} - Instance {}",
+                    "   |-- {:?} - Instance {}",
                     characteristic.uuid, characteristic.instance_id
                 );
 
-
                 if HomekitCharacteristicUuid::ServiceSignature != characteristic.uuid {
+                    // Read the signature of the characteristic
+
                     let hap_request = HapRequest {
                         iid_size: homekit::IidSize::Bit16,
                         opcode: homekit::Opcode::CharacteristicSignatureRead,
@@ -255,11 +262,12 @@ impl HomekitDevice {
 
                     let write_request = CharacteristicWriteRequest {
                         offset: 0,
-                        op_type: blez::gatt::WriteOp::Request,
+                        op_type: bluer::gatt::WriteOp::Request,
                         prepare_authorize: true,
+                        ..Default::default()
                     };
 
-                    println!("    -- Characteristic Request: {:x?}", hap_request_data);
+                    log::trace!("    -- Characteristic Request: {:x?}", hap_request_data);
 
                     characteristic
                         .gatt_characteristic
@@ -273,20 +281,57 @@ impl HomekitDevice {
                         .await
                         .context("Failed to read data from characteristic")?;
 
-                    println!("    -- Characteristic Response: {:x?}", response);
+                    log::trace!("    -- Characteristic Response: {:x?}", response);
 
                     match HapResponse::parse(&response) {
                         Ok(parsed_response) => {
-                            println!("    -- Parsed: {:x?}", parsed_response);
+                            log::trace!("    -- Parsed: {:x?}", parsed_response);
+                            println!("   \\-  Signature Read: {:?}", parsed_response.status);
 
                             if let Some(data) = parsed_response.data {
                                 let tlvs = Tlv::parse(&data);
 
                                 for tlv in tlvs {
-                                    println!("TLV: {:?}", tlv);
+                                    log::trace!("TLV: {:?}", tlv);
+                                    match tlv.tlv_type {
+                                        0x04 => {
+                                            // UUID (Char Type)
+                                            let uuid = tlv_to_uuid(&tlv)?;
+                                            println!("    |-- UUID:      {:x?}", uuid);
+                                        }
+                                        0x07 => {
+                                            // SVC ID
+                                            let id = tlv_to_u16(&tlv)?;
+                                            println!("    |-- SVC ID:    {}", id);
+                                        }
+                                        0x06 => {
+                                            // SVC Type
+                                            let uuid = tlv_to_uuid(&tlv)?;
+                                            println!("    |-- SVC Type:  {:x?}", uuid);
+                                        }
+                                        0x0A => {
+                                            // Characteristic properties
+                                            let prop_value = tlv_to_u16(&tlv)?;
+                                            let probs = CharProbs::from_bits(prop_value).ok_or_else(|| anyhow::anyhow!("Failed to parse HAP Characteristic properties from {}", prop_value))?;
+                                            println!("    |-- Char Prop: {:?}", probs);
+                                        }
+                                        0x0B => {
+                                            // UTF-8 User description
+                                        }
+                                        0x0C => {
+                                            // GATT Format
+                                            println!("    |-- Gatt Fmt:  {:x?}", tlv.value);
+                                        }
+                                        0x0D => {
+                                            // GATT Valid Range
+                                        }
+                                        0x0E => {
+                                            // HAP Step Value
+                                        }
+                                        n => println!("Unknown TLV type {}", n),
+                                    }
                                 }
                             }
-
                         }
 
                         Err(e) => println!("    -- Failed to parse: {:?}", e),
@@ -305,13 +350,38 @@ impl HomekitDevice {
     }
 }
 
+fn tlv_to_uuid(tlv: &Tlv) -> anyhow::Result<bluer::Uuid> {
+    match &tlv.value {
+        homekit_ble::tlv::Value::Bytes(bytes) => {
+            let raw_bytes: [u8; 16] = (*bytes).try_into()?;
+            let raw_value = u128::from_le_bytes(raw_bytes);
+            let uuid = bluer::Uuid::from_u128(raw_value);
+
+            Ok(uuid)
+        }
+        other => anyhow::bail!("Unexpected TLV value for UUID {:?}", other),
+    }
+}
+
+fn tlv_to_u16(tlv: &Tlv) -> anyhow::Result<u16> {
+    match &tlv.value {
+        homekit_ble::tlv::Value::Bytes(bytes) => {
+            let raw_bytes: [u8; 2] = (*bytes).try_into()?;
+            let raw_value = u16::from_le_bytes(raw_bytes);
+
+            Ok(raw_value)
+        }
+        other => anyhow::bail!("Unexpected TLV value for u16 {:?}", other),
+    }
+}
+
 async fn characteristic_signature_read(characteristic: &HomekitCharacteristic) {}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     pretty_env_logger::init();
 
-    let session = blez::Session::new().await?;
+    let session = bluer::Session::new().await?;
 
     let adapter_names = session.adapter_names().await?;
 
@@ -323,14 +393,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     while let Some(evt) = discover_events.next().await {
         match evt {
-            blez::AdapterEvent::DeviceAdded(addr) => {
-                show_device_info(&adapter, addr).await?;
+            bluer::AdapterEvent::DeviceAdded(addr) => {
+                if let Err(err) = show_device_info(&adapter, addr).await {
+                    eprintln!("Error accessing device information: {:?}", err);
+                }
             }
-            blez::AdapterEvent::DeviceRemoved(addr) => {
+            bluer::AdapterEvent::DeviceRemoved(addr) => {
                 println!("Device removed: {}", addr);
             }
             // Ignore properties for now
-            blez::AdapterEvent::PropertyChanged(_) => (),
+            bluer::AdapterEvent::PropertyChanged(_) => (),
         }
     }
 
