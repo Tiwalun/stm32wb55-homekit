@@ -1,6 +1,6 @@
 // This crate is `no_std`, only for
 // tests not.
-#![cfg_attr(not(test), no_std)]
+//#![cfg_attr(not(test), no_std)]
 
 use core::convert::{TryFrom, TryInto};
 
@@ -54,7 +54,9 @@ impl HapPdu<'_> {
     pub fn parse(data: &[u8]) -> Result<HapPdu, Error> {
         // We need at least 1 byte for the control field
 
-        let control_field = data.get(0).ok_or(Error::BadLength)?;
+        require_length(data, 1)?;
+
+        let control_field = data[0];
 
         let fragmented = if control_field & (1 << 7) == (1 << 7) {
             Fragmented::Continuation
@@ -114,9 +116,7 @@ impl HapRequest<'_> {
     fn parse_after_control(data: &[u8], iid_size: IidSize) -> Result<HapRequest, Error> {
         // The Request Header is at least 4 bytes (excluding the control field)
 
-        if data.len() < 4 {
-            return Err(Error::BadLength);
-        }
+        require_length(data, 4)?;
 
         let op_code = OpCode::try_from(data[0])?;
 
@@ -129,9 +129,7 @@ impl HapRequest<'_> {
 
         let pdu_data = if data.len() > 4 {
             // We need at least two bytes for the body length
-            if data.len() < 6 {
-                return Err(Error::BadLength);
-            }
+            require_length(data, 6)?;
 
             let body_len: u16 = u16::from_le_bytes((&data[4..6]).try_into().unwrap());
 
@@ -253,7 +251,7 @@ impl HapResponse<'_> {
 
 #[derive(Debug)]
 pub enum Error {
-    BadLength,
+    BadLength { actual: usize, min_required: usize },
     UnsupportedPduType(u8),
     UnknownOpCode(u8),
     InsufficientBuffer,
@@ -294,6 +292,14 @@ impl TryFrom<u8> for OpCode {
     }
 }
 
+fn require_length(data: &[u8], minimum_required: usize) -> Result<(), Error> {
+    if data.len() < minimum_required {
+        Err(Error::BadLength { min_required: minimum_required, actual: data.len() })
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -314,7 +320,7 @@ mod test {
 
     #[test]
     fn test_parsing_characteristic_signature_pdu() {
-        let rx_data = [0, 1, 23, 0, 0, 0];
+        let rx_data = [0, 1, 23, 35, 0];
 
         let pdu = HapPdu::parse(&rx_data).unwrap();
 
@@ -331,7 +337,7 @@ mod test {
         // A Request PDU needs at least 5 Bytes
         let rx_data = [0u8; 4];
 
-        assert!(matches!(HapPdu::parse(&rx_data), Err(Error::BadLength)));
+        assert!(matches!(HapPdu::parse(&rx_data), Err(Error::BadLength { .. })));
     }
 
     #[test]
