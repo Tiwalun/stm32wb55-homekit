@@ -19,11 +19,10 @@ async fn show_device_info(adapter: &Adapter, addr: Address) -> Result<(), anyhow
         .device(addr)
         .with_context(|| format!("Failed to open device with address {}", addr))?;
 
-    println!(" - Address: {}", device.address());
-    println!(" - Name:    {:?}", device.name().await?);
-
     if let Some(data) = device.manufacturer_data().await? {
         if let Some(homekit_data) = data.get(&APPLE_COID) {
+            println!(" - Address: {}", device.address());
+            println!(" - Name:    {:?}", device.alias().await?);
             println!(" - Apple manufacturer data: {:02x?}", homekit_data);
 
             if is_homekit_device(homekit_data) {
@@ -31,11 +30,13 @@ async fn show_device_info(adapter: &Adapter, addr: Address) -> Result<(), anyhow
 
                 homekit_device.debug_print().await?;
 
+                homekit_device.try_pair().await?;
+
                 homekit_device.close().await?;
             }
         }
     } else {
-        println!(" -- no manufacturer data");
+        log::trace!(" -- no manufacturer data");
     }
 
     println!(" ----");
@@ -172,6 +173,60 @@ impl HomekitCharacteristic {
             instance_id,
         })
     }
+
+    async fn write_with_response(&self, data: &[u8], tid: u8) -> Result<Vec<u8>, anyhow::Error> {
+        let mut complete_data = vec![0u8; 100];
+
+        let mut offset = 0;
+
+        let response_tlv = Tlv::new(0x09, &[1u8][..]);
+
+        offset += response_tlv.write_into(&mut complete_data[offset..]);
+
+        let value_tlv = Tlv::new(0x01, data);
+
+        offset += value_tlv.write_into(&mut complete_data[offset..]);
+
+        complete_data.truncate(offset);
+
+        // TODO: Get tid
+        let request = HapRequest {
+            iid_size: homekit::IidSize::Bit16,
+            opcode: homekit::Opcode::CharacteristicWrite,
+            tid,
+            char_id: self.instance_id,
+            data: complete_data,
+        };
+
+        let request_data = request.to_bytes();
+
+        println!("Writing to characteristic with IID={}", self.instance_id);
+
+        let request = CharacteristicWriteRequest {
+            prepare_authorize: true,
+            op_type: bluer::gatt::WriteOp::Request,
+            ..Default::default()
+        };
+
+        self.gatt_characteristic
+            .write_ext(&request_data, &request)
+            .await?;
+
+        let response = self.gatt_characteristic.read().await?;
+
+        let parsed_response = HapResponse::parse(&response)?;
+
+        if parsed_response.tid != tid {
+            println!(
+                "Error: expected TID={}, but got TID={}",
+                tid, parsed_response.tid
+            );
+        }
+
+        println!("Response to characteristic read: {:x?}", &parsed_response);
+
+        Ok(Vec::new())
+    }
 }
 
 impl HomekitDevice {
@@ -248,6 +303,8 @@ impl HomekitDevice {
                 if HomekitCharacteristicUuid::ServiceSignature != characteristic.uuid {
                     // Read the signature of the characteristic
 
+                    let send_tid = self.tid;
+
                     let hap_request = HapRequest {
                         iid_size: homekit::IidSize::Bit16,
                         opcode: homekit::Opcode::CharacteristicSignatureRead,
@@ -287,6 +344,13 @@ impl HomekitDevice {
                         Ok(parsed_response) => {
                             log::trace!("    -- Parsed: {:x?}", parsed_response);
                             println!("   \\-  Signature Read: {:?}", parsed_response.status);
+
+                            if parsed_response.tid != send_tid {
+                                println!(
+                                    "Warn: response TID does not match, expected {}, got {}",
+                                    send_tid, parsed_response.tid
+                                );
+                            }
 
                             if let Some(data) = parsed_response.data {
                                 let tlvs = Tlv::parse(&data);
@@ -343,6 +407,41 @@ impl HomekitDevice {
         Ok(())
     }
 
+    async fn try_pair(&mut self) -> Result<(), anyhow::Error> {
+        // Find the pairing service
+
+        let pairing_service = self
+            .services
+            .iter()
+            .find(|s| s.uuid == HomekitServiceUuid::Pairing)
+            .ok_or_else(|| anyhow::anyhow!("No pairing service found on homekit device"))?;
+
+        // Find the pairing characteristic
+        let characteristic = pairing_service
+            .characteristics
+            .iter()
+            .find(|c| c.uuid == HomekitCharacteristicUuid::PairingPairSetup)
+            .ok_or_else(|| anyhow::anyhow!("Did not find pairing.setup characteristic."))?;
+
+        let state_tld = Tlv::new(0x6, &[1][..]);
+
+        let mut data_buff = vec![0; 100];
+
+        let mut offset = state_tld.write_into(&mut data_buff);
+
+        let method_tlv = Tlv::new(0, &[1][..]);
+
+        offset += method_tlv.write_into(&mut data_buff[offset..]);
+
+        let response = characteristic
+            .write_with_response(&data_buff[..offset], self.tid)
+            .await?;
+
+        self.tid += 1;
+
+        Ok(())
+    }
+
     async fn close(self) -> Result<(), anyhow::Error> {
         self.device.disconnect().await?;
 
@@ -391,19 +490,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut discover_events = adapter.discover_devices().await?;
 
+    let mut device_list = Vec::new();
+
     while let Some(evt) = discover_events.next().await {
         match evt {
             bluer::AdapterEvent::DeviceAdded(addr) => {
+                device_list.push(addr);
                 if let Err(err) = show_device_info(&adapter, addr).await {
                     eprintln!("Error accessing device information: {:?}", err);
+
+                    adapter.remove_device(addr).await?;
                 }
             }
             bluer::AdapterEvent::DeviceRemoved(addr) => {
-                println!("Device removed: {}", addr);
+                if let Some(i) = device_list.iter().position(|a| a == &addr) {
+                    println!("Device removed: {}", addr);
+                    device_list.swap_remove(i);
+                }
             }
             // Ignore properties for now
-            bluer::AdapterEvent::PropertyChanged(_) => (),
+            bluer::AdapterEvent::PropertyChanged(prop) => println!("Property changed: {:?}", prop),
         }
+
+        /*
+        let mut device_to_remove = Vec::new();
+
+        for (i, device) in device_list.iter().enumerate() {
+            if let Err(err) = show_device_info(&adapter, device.clone()).await {
+                eprintln!("Error accessing device information: {:?}", err);
+            } else {
+                device_to_remove.push(i);
+            }
+        }
+
+        device_to_remove.sort();
+
+        for i in device_to_remove.iter().rev() {
+            device_list.swap_remove(*i);
+        }
+
+        */
     }
 
     Ok(())

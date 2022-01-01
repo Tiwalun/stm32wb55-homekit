@@ -2,10 +2,17 @@
 #![no_main]
 #![no_std]
 #![allow(non_snake_case)]
+#![feature(alloc_error_handler)]
 
+use alloc_cortex_m::CortexMHeap;
 use panic_rtt_target as _;
 // use panic_halt as _;
 use rtt_target::{rprintln, rtt_init_print};
+use sha2::Sha256;
+use srp::{
+    client::{srp_private_key, SrpClient},
+    server::{SrpServer, UserRecord},
+};
 
 extern crate stm32wb_hal as hal;
 
@@ -65,10 +72,25 @@ const ADV_INTERVAL_MS: u64 = 250;
 const BT_NAME: &[u8] = b"hokt";
 const BLE_GAP_DEVICE_NAME_LENGTH: u8 = BT_NAME.len() as u8;
 
+#[global_allocator]
+static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
+
+#[alloc_error_handler]
+fn oom(layout: core::alloc::Layout) -> ! {
+    rprintln!("Failed to allocate for {:?}", layout);
+    loop {}
+}
+
 #[entry]
 fn entry() -> ! {
     //rtt_init_print!(BlockIfFull, 4096);
     rtt_init_print!(NoBlockSkip, 4096);
+
+    let start = cortex_m_rt::heap_start() as usize;
+    let size = 16384;
+
+    unsafe { ALLOCATOR.init(start, size) }
+
     run();
 
     loop {
@@ -650,7 +672,7 @@ impl PairingService<4> {
                             },
                             // HAP-Param-Return-Response
                             0x9 => {
-                                rprintln!("Write with response!");
+                                rprintln!("Write with response (body: {:?}!", &tlv.value);
                                 write_with_response = true;
                             }
                             _ => {
@@ -686,21 +708,85 @@ impl PairingService<4> {
                             rprintln!("Pairing State: {:?}", state.unwrap().value);
                             rprintln!("Pairing Method: {:?}", method);
 
-                            let mut tid_data = [0u8; 20];
+                            // TODO: Handle SRP
+
+                            let group = &srp::groups::G_3072;
+
+                            // username: "Pair-Setup"
+                            // TODO: Random salt
+
+                            // verifier: "483-75-362"
+
+                            let password = b"483-75-362";
+
+                            // should be 64 bytes?
+                            let a = &[0x01, 0x23];
+
+                            // Create  a verifier
+                            let client = SrpClient::<Sha256>::new(a, &group);
+
+                            let user_name = b"Pair-Setup";
+
+                            let salt = &[
+                                0xab, 0x0d, 0x30, 0x1a, 0x8a, 0xaf, 0x3e, 0x57, 0xcc, 0x61, 0x87,
+                                0xdd, 0x85, 0xa3, 0xb7, 0x4f,
+                            ];
+
+                            let private_key = srp_private_key::<Sha256>(user_name, password, salt);
+
+                            let verifier = client.get_password_verifier(&private_key);
+
+                            // SRP-6a??
+
+                            let user_record = UserRecord {
+                                username: b"Pair-Setup",
+                                salt: salt,
+                                verifier: &&verifier,
+                            };
+
+                            let b_private = &[0x34, 0x34, 0x34];
+
+                            // a_pub does not seem to matter here (see https://github.com/ewilken/hap-rs/blob/18ed41187882cc55b98107ba4f64b21f7da7715d/src/transport/http/handler/pair_setup.rs#L194)
+                            let server =
+                                SrpServer::<Sha256>::new(&user_record, b"flobb", b_private, group)
+                                    .expect("Failed to create SRP server");
+
+                            let b_pub = server.get_b_pub();
+
+                            // Send to client:
+                            // - b_pub
+                            // - salt
+
+                            // TODO next:
+
+                            // receive proof and public key from device, and verify
+
+                            //server.verify(user_proof)
+
+                            let mut tid_data = [0u8; 512];
 
                             // kTLVType_State: 2
                             let tlv = Tlv::new(0x06, 2u8);
 
                             let mut offset = tlv.write_into(&mut tid_data);
 
-                            // Add error: max auth attempts
-                            let tlv = Tlv::new(0x07, 5u8);
+                            // Write public key
+                            let pub_key_tlv = Tlv::new(0x03, b_pub.as_ref());
 
-                            offset += tlv.write_into(&mut tid_data[offset..]);
+                            offset += pub_key_tlv.write_into(&mut tid_data[offset..]);
+
+                            rprintln!("Offset after pub_key: {}", offset);
+
+                            // Write salt
+                            let salt_tlv = Tlv::new(0x02, &salt[..]);
+
+                            offset += salt_tlv.write_into(&mut tid_data[offset..]);
+
+                            rprintln!("Offset after salt: {}", offset);
 
                             let complete_tlv = Tlv::new(0x01, &tid_data[..offset]);
 
-                            let mut complete_tlv_data = [0u8; 20];
+                            let mut complete_tlv_data = [0u8; 512];
 
                             let len = complete_tlv.write_into(&mut complete_tlv_data);
 
@@ -712,18 +798,18 @@ impl PairingService<4> {
 
                             // we now have to write the property with the response
 
-                            let mut resp_buff = [0u8; 50];
+                            let mut resp_buff = [0u8; 512];
 
                             response
                                 .write_into(&mut resp_buff)
                                 .expect("Failed to HAP Response");
 
-                            rprintln!("Response: {:?}", response);
+                            rprintln!("Response (size={}): {:?}", response.size(), response);
 
                             characteristic.set_value(&resp_buff[..response.size()])?;
-
-                            // TODO: Handle SRP
                         }
+                    } else {
+                        characteristic.set_value(&[])?;
                     }
                 }
                 Ok(())

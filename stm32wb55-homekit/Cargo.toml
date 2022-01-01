@@ -35,6 +35,12 @@ panic-rtt-target = { version = "0.1.0", features = ["cortex-m"] }
 #panic-halt = "0.2.0"
 
 cortex-m-rt = "0.6.6"
+#srp = "0.5.0"
+srp = "0.6.0-pre"
+
+sha2  = { version = "0.9", default-features = false }
+
+alloc-cortex-m = "0.4.1"
 
 [package.metadata]
 chip = "STM32WB55CCUX"

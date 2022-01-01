@@ -172,18 +172,32 @@ pub struct Characteristic {
 impl Characteristic {
     pub fn set_value(&self, value: &[u8]) -> Result<(), ()> {
         if value.len() > self.max_len {
+            rprintln!(
+                "Max length is {}, but got data with len {}",
+                self.max_len,
+                value.len()
+            );
             return Err(());
         }
 
+        rprintln!("Updating characteristic value.");
+
         let response = perform_command(|rc: &mut RadioCopro| {
-            rc.update_characteristic_value(&UpdateCharacteristicValueParameters {
+            let result = rc.update_characteristic_value(&UpdateCharacteristicValueParameters {
                 service_handle: self.service,
                 characteristic_handle: self.characteristic,
                 offset: 0,
                 value,
-            })
-            .map_err(|_| nb::Error::Other(()))
+            });
+
+            if let Err(e) = result {
+                rprintln!("Failed to update characteristic: {:?}", e);
+            }
+
+            result.map_err(|_| nb::Error::Other(()))
         })?;
+
+        rprintln!("Updated characteristic value.");
 
         if let ReturnParameters::Vendor(
             stm32wb55::event::command::ReturnParameters::GattUpdateCharacteristicValue(status),
@@ -272,6 +286,7 @@ pub fn perform_command(
     {
         Ok(return_params)
     } else {
+        rprintln!("Response: {:?}", response);
         Err(())
     }
 }

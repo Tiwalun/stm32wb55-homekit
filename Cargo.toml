@@ -19,3 +19,5 @@ bluetooth-hci = { git = "https://github.com/Tiwalun/bluetooth-hci", branch = "ad
 
 # Patched version with updated cortex-m-rt
 stm32wb55 = { git = "https://github.com/Tiwalun/stm32wb55"}
+
+srp = { git = "https://github.com/Tiwalun/PAKEs", branch = "no-std-compatible" }

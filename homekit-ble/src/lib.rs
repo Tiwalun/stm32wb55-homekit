@@ -294,7 +294,10 @@ impl TryFrom<u8> for OpCode {
 
 fn require_length(data: &[u8], minimum_required: usize) -> Result<(), Error> {
     if data.len() < minimum_required {
-        Err(Error::BadLength { min_required: minimum_required, actual: data.len() })
+        Err(Error::BadLength {
+            min_required: minimum_required,
+            actual: data.len(),
+        })
     } else {
         Ok(())
     }
@@ -337,7 +340,10 @@ mod test {
         // A Request PDU needs at least 5 Bytes
         let rx_data = [0u8; 4];
 
-        assert!(matches!(HapPdu::parse(&rx_data), Err(Error::BadLength { .. })));
+        assert!(matches!(
+            HapPdu::parse(&rx_data),
+            Err(Error::BadLength { .. })
+        ));
     }
 
     #[test]

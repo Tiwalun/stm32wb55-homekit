@@ -92,6 +92,7 @@ impl HapCharacteristic {
     }
 
     pub fn handle_write(&mut self, tid: u8, data: Option<&[u8]>) -> Result<(), ()> {
+        rprintln!("Write to {}", self.debug_name);
         (self.write_handler)(self, tid, data)
     }
 }

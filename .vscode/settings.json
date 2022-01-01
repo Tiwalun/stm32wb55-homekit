@@ -8,5 +8,7 @@
         "core",
         "homekit-ble",
         "stm32wb55-homekit"
-    ]
+    ],
+    "rust-analyzer.cargo.target": "thumbv7em-none-eabihf",
+    "rust-analyzer.checkOnSave.allTargets": false
 }

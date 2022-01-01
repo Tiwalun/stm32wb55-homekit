@@ -18,7 +18,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum HomekitServiceUuid {
     AccessoryInformation,
     Lightbulb,
@@ -94,6 +94,7 @@ pub enum IidSize {
 #[derive(Debug, Copy, Clone)]
 pub enum Opcode {
     CharacteristicSignatureRead = 0x1,
+    CharacteristicWrite = 0x2,
 }
 
 #[repr(u8)]
@@ -176,7 +177,7 @@ impl HapRequest {
 #[derive(Debug)]
 pub struct HapResponse {
     control_field: u8,
-    tid: u8,
+    pub tid: u8,
     pub status: HapStatus,
 
     pub data: Option<Vec<u8>>,
